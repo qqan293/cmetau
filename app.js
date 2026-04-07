@@ -438,7 +438,7 @@ function buildDirectionSection({ heading, destination, directionCode, activeVehi
     const pill = document.createElement("div");
     const position = getVehicleDisplayPercent(vehicle, direction);
     const assetTarget = getVehicleAssetTarget(vehicle);
-    const kpi3Points = getCurrentKpi3PointsForAsset(assetTarget.key);
+    const kpi3Points = getCurrentKpi3PointsForVehicle(vehicle);
     const selected =
       assetTarget.key &&
       state.selectedInspectorKind === "asset" &&
@@ -1395,14 +1395,44 @@ function getVehicleDisplayPercent(vehicle, direction) {
   return vehicle.progressPercent;
 }
 
-function getCurrentKpi3PointsForAsset(assetKey) {
-  if (!assetKey) {
+function isKpi3ResultActiveForVehicle(result, vehicle, assetKey, minute) {
+  if (!result || !vehicle || !assetKey || result.assetKey !== assetKey) {
+    return false;
+  }
+
+  if (minute < result.startMinute || minute > result.endMinute) {
+    return false;
+  }
+
+  if (!Array.isArray(result.windows) || result.windows.length === 0) {
+    return true;
+  }
+
+  const matchingTripWindows = result.windows.filter(
+    (window) => !vehicle.tripId || !window.tripId || window.tripId === vehicle.tripId
+  );
+
+  if (matchingTripWindows.length === 0) {
+    return false;
+  }
+
+  return matchingTripWindows.some(
+    (window) => minute >= window.startMinute && minute <= window.endMinute
+  );
+}
+
+function getCurrentKpi3PointsForVehicle(vehicle) {
+  const assetKey = getVehicleAssetTarget(vehicle).key;
+
+  if (!assetKey || vehicle.status === "ok") {
     return 0;
   }
 
   return roundToTenth(
     state.kpi3Results
-      .filter((result) => result.assetKey === assetKey)
+      .filter((result) =>
+        isKpi3ResultActiveForVehicle(result, vehicle, assetKey, state.simulationMinute)
+      )
       .reduce((sum, result) => sum + getKpi3PointsAtMinute(result, state.simulationMinute), 0)
   );
 }
@@ -1425,7 +1455,7 @@ function getVehicleTooltipPointLines(vehicle) {
 
   const assetTarget = getVehicleAssetTarget(vehicle);
   if (assetTarget.key) {
-    const points = getCurrentKpi3PointsForAsset(assetTarget.key);
+    const points = getCurrentKpi3PointsForVehicle(vehicle);
 
     if (points > 0) {
       lines.push(`KPI 03 ${points.toFixed(1)} PP`);
@@ -2346,32 +2376,70 @@ function buildTimelineKpi3Windows(rows, usdIncidents) {
       continue;
     }
 
-    const overlappingIncidents = usdIncidents.filter(
-      (incident) =>
-        incident.startMinute <= endMinute && incident.endMinute >= startMinute
-    );
+    const incident = findBestMatchingUsdIncident(startMinute, endMinute, usdIncidents);
+    if (!incident) {
+      continue;
+    }
 
-    overlappingIncidents.forEach((incident) => {
-      windows.push({
-        incidentId: incident.id,
-        numericId: incident.numericId,
-        assetKey: previous.assetKey,
-        assetLabel: previous.assetLabel,
-        assetKind: previous.assetKind,
-        lrvId: previous.lrvId,
-        blockId: previous.blockId,
-        tripId: previous.tripId,
-        directionCode: previous.directionCode,
-        startMinute,
-        endMinute,
-        note: impact.note,
-        triggerEvent: buildKpi3TriggerEvent(previous, current, impact, startMinute),
-        endEvent: buildKpi3EndEvent(current, impact, endMinute)
-      });
+    windows.push({
+      incidentId: incident.id,
+      numericId: incident.numericId,
+      assetKey: previous.assetKey,
+      assetLabel: previous.assetLabel,
+      assetKind: previous.assetKind,
+      lrvId: previous.lrvId,
+      blockId: previous.blockId,
+      tripId: previous.tripId,
+      directionCode: previous.directionCode,
+      startMinute,
+      endMinute,
+      note: impact.note,
+      triggerEvent: buildKpi3TriggerEvent(previous, current, impact, startMinute),
+      endEvent: buildKpi3EndEvent(current, impact, endMinute)
     });
   }
 
   return windows;
+}
+
+function findBestMatchingUsdIncident(startMinute, endMinute, usdIncidents) {
+  const matches = usdIncidents
+    .map((incident) => {
+      const overlapStart = Math.max(startMinute, incident.startMinute);
+      const overlapEnd = Math.min(endMinute, incident.endMinute);
+      const overlapMinutes = overlapEnd - overlapStart;
+
+      return {
+        incident,
+        overlapMinutes,
+        containsStart:
+          startMinute >= incident.startMinute && startMinute <= incident.endMinute,
+        containsEnd:
+          endMinute >= incident.startMinute && endMinute <= incident.endMinute
+      };
+    })
+    .filter((match) => match.overlapMinutes > 0)
+    .sort((left, right) => {
+      if (left.containsStart !== right.containsStart) {
+        return left.containsStart ? -1 : 1;
+      }
+
+      if (left.containsEnd !== right.containsEnd) {
+        return left.containsEnd ? -1 : 1;
+      }
+
+      if (right.overlapMinutes !== left.overlapMinutes) {
+        return right.overlapMinutes - left.overlapMinutes;
+      }
+
+      if (left.incident.startMinute !== right.incident.startMinute) {
+        return left.incident.startMinute - right.incident.startMinute;
+      }
+
+      return (left.incident.numericId || Number.MAX_SAFE_INTEGER) - (right.incident.numericId || Number.MAX_SAFE_INTEGER);
+    });
+
+  return matches[0]?.incident || null;
 }
 
 function normalizeTimelineMovementRow(row) {
