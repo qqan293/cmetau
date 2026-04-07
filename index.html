@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CMET Live Journey Board</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Canberra Metro Operations View</p>
+          <h1>Whole-route light rail playback with live train positions.</h1>
+          <p class="hero-copy">
+            Track every stop on Line 1, replay service movement, and surface
+            disruptions the moment they affect the corridor.
+          </p>
+        </div>
+        <div class="hero-clock">
+          <span>Simulation time</span>
+          <strong id="clockLabel">--:--</strong>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel controls-panel">
+          <div class="panel-heading">
+            <h2>Operational Feeds</h2>
+            <p>Load timeline and KPI exports for route playback and compliance tracking.</p>
+          </div>
+
+          <div class="data-loader">
+            <label class="file-label" for="csvInput">Timeline CSV</label>
+            <input id="csvInput" type="file" accept=".csv,text/csv" />
+            <p id="csvStatus" class="file-status">Using mock service data.</p>
+          </div>
+
+          <div class="data-loader">
+            <label class="file-label" for="kpi2Input">KPI 02 CSV</label>
+            <input id="kpi2Input" type="file" accept=".csv,text/csv" />
+            <p id="kpi2Status" class="file-status">No KPI 02 file loaded.</p>
+          </div>
+
+          <div class="data-loader">
+            <label class="file-label" for="kpi3Input">KPI 03 CSV</label>
+            <input id="kpi3Input" type="file" accept=".csv,text/csv" />
+            <p id="kpi3Status" class="file-status">No KPI 03 file loaded.</p>
+          </div>
+
+          <div class="legend">
+            <span><i class="legend-dot active"></i>On time</span>
+            <span><i class="legend-dot delayed"></i>Delayed</span>
+            <span><i class="legend-dot disrupted"></i>Disrupted section</span>
+          </div>
+        </section>
+
+        <section class="panel network-panel">
+          <div class="panel-heading">
+            <h2>Route View</h2>
+            <p>All stops from Gungahlin Place to Alinga Street.</p>
+          </div>
+
+          <div class="route-player">
+            <div class="route-player-controls">
+              <button id="playPauseButton" class="player-play-button" type="button">
+                Play
+              </button>
+              <label class="player-speed-control">
+                <span>Speed</span>
+                <select id="speedSelect">
+                  <option value="1">1x</option>
+                  <option value="10">10x</option>
+                  <option value="30" selected>30x</option>
+                  <option value="60">60x</option>
+                </select>
+              </label>
+              <button id="liveButton" class="player-live-button" type="button">
+                Jump to live
+              </button>
+            </div>
+          </div>
+
+          <label class="slider-label" for="timeSlider">
+            <span>Service timeline</span>
+            <span>Scrub through the operating day</span>
+          </label>
+          <div id="timelineScrubber" class="timeline-scrubber timeline-scrubber-right">
+            <div id="timelineUsdOverlay" class="timeline-usd-overlay"></div>
+            <input id="timeSlider" type="range" min="300" max="1440" step="1" />
+          </div>
+
+          <div class="timeline-scale timeline-scale-mainframe">
+            <div class="timeline-stamp">
+              <small>Start</small>
+              <span id="timelineStart">05:00:00</span>
+            </div>
+            <div class="timeline-stamp timeline-stamp-current">
+              <small>Simulation time</small>
+              <strong id="timelineLabel">05:00:00</strong>
+            </div>
+            <div class="timeline-stamp">
+              <small>End</small>
+              <span id="timelineEnd">24:00:00</span>
+            </div>
+          </div>
+
+          <div id="routeCanvas" class="route-canvas" aria-live="polite"></div>
+        </section>
+
+        <section class="panel messages-panel">
+          <div class="panel-heading">
+            <h2 id="platformMessageTitle">Message Inspector</h2>
+            <p>Click a platform for KPI 02 stop messages or an active LRV for KPI 03 onboard messages.</p>
+          </div>
+          <div id="platformMessageList" class="stack-list"></div>
+        </section>
+
+        <section class="panel status-panel">
+          <div class="panel-heading">
+            <h2>Live Status</h2>
+            <p>Vehicles, alerts, and stop-level impact.</p>
+          </div>
+
+          <div class="status-grid">
+            <article class="status-card">
+              <span class="status-label">Network state</span>
+              <strong id="networkState">Normal service</strong>
+              <p id="networkSummary">No active disruption.</p>
+            </article>
+
+            <article class="status-card">
+              <span class="status-label">Active LRVs</span>
+              <strong id="activeCount">0</strong>
+              <p id="activeSummary">No vehicles in service at this time.</p>
+            </article>
+
+            <article class="status-card">
+              <span class="status-label">KPI 02 Points</span>
+              <strong id="kpi2Total">--</strong>
+              <p id="kpi2Summary">Load both Timeline and KPI 02 CSV files.</p>
+            </article>
+
+            <article class="status-card">
+              <span class="status-label">KPI 03 Points</span>
+              <strong id="kpi3Total">--</strong>
+              <p id="kpi3Summary">Load both Timeline and KPI 03 CSV files.</p>
+            </article>
+          </div>
+
+          <section class="audit-section">
+            <div class="section-heading">
+              <h3>Audit Tables</h3>
+              <p>Platform and onboard notification scoring for each USD window in the loaded day.</p>
+            </div>
+            <div class="audit-grid">
+              <section class="audit-block">
+                <div class="audit-block-heading">
+                  <h4>KPI 02 Audit</h4>
+                  <p>One row per platform and USD window contributing to the KPI 02 total.</p>
+                </div>
+                <div id="kpi2Audit" class="audit-table-wrap"></div>
+              </section>
+              <section class="audit-block">
+                <div class="audit-block-heading">
+                  <h4>KPI 03 Audit</h4>
+                  <p>One row per LRV or block and USD window contributing to the KPI 03 total.</p>
+                </div>
+                <div id="kpi3Audit" class="audit-table-wrap"></div>
+              </section>
+            </div>
+          </section>
+
+          <div class="detail-columns">
+            <section>
+              <h3>Disruptions</h3>
+              <div id="disruptionList" class="stack-list"></div>
+            </section>
+            <section>
+              <h3>Vehicles</h3>
+              <div id="vehicleList" class="stack-list"></div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
