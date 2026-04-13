@@ -49,9 +49,23 @@
           </div>
 
           <div class="data-loader">
+            <label class="file-label" for="kpi2LogInput">KPI 02 Calculation Log</label>
+            <input id="kpi2LogInput" type="file" accept=".txt,text/plain" />
+            <p id="kpi2LogStatus" class="file-status">No KPI 02 calculation log loaded.</p>
+          </div>
+
+          <div class="data-loader">
             <label class="file-label" for="kpi3Input">KPI 03 CSV</label>
             <input id="kpi3Input" type="file" accept=".csv,text/csv" />
             <p id="kpi3Status" class="file-status">No KPI 03 file loaded.</p>
+          </div>
+
+          <div class="data-loader">
+            <label class="file-label" for="kpi3LrvMapInput">LRV Timetable CSV</label>
+            <input id="kpi3LrvMapInput" type="file" accept=".csv,text/csv" />
+            <p id="kpi3LrvMapStatus" class="file-status">
+              Optional for KPI 03 when the Timeline CSV does not include LRV numbers.
+            </p>
           </div>
 
           <div class="legend">
@@ -63,8 +77,32 @@
 
         <section class="panel network-panel">
           <div class="panel-heading">
-            <h2>Route View</h2>
-            <p>All stops from Gungahlin Place to Alinga Street.</p>
+            <div class="route-heading-row">
+              <div>
+                <h2>Route View</h2>
+                <p id="routeViewCopy">All stops from Gungahlin Place to Alinga Street.</p>
+              </div>
+              <div class="view-tabs" role="tablist" aria-label="Route data view">
+                <button
+                  id="routeTimelineTab"
+                  class="view-tab is-active"
+                  type="button"
+                  role="tab"
+                  aria-selected="true"
+                >
+                  Timeline Playback
+                </button>
+                <button
+                  id="routeKpi2LogTab"
+                  class="view-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                >
+                  KPI 2 Log
+                </button>
+              </div>
+            </div>
           </div>
 
           <div class="route-player">
@@ -175,6 +213,13 @@
                 <div id="kpi3Audit" class="audit-table-wrap"></div>
               </section>
             </div>
+            <section class="audit-block audit-block-full">
+              <div class="audit-block-heading">
+                <h4>USD Method Comparison</h4>
+                <p>Compare the app's timeline-derived USD identification against the imported KPI 02 calculation log.</p>
+              </div>
+              <div id="usdComparison" class="audit-table-wrap"></div>
+            </section>
           </section>
 
           <div class="detail-columns">

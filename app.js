@@ -56,6 +56,8 @@ const state = {
   simulationMinute: getCurrentMinute(),
   timerId: null,
   dataSource: "mock",
+  routeViewMode: "timeline",
+  timelineRows: [],
   timelineTrips: [],
   timelineUsdIncidents: [],
   timelineUsdPlatformRows: [],
@@ -66,11 +68,19 @@ const state = {
   kpi2Results: [],
   kpi2TotalPoints: 0,
   kpi2Intervals: { PA: new Map(), PID: new Map() },
+  kpi2LogFileName: "",
+  kpi2LogIncidents: [],
+  kpi2LogPlatformRows: [],
+  kpi2LogResults: [],
+  kpi2LogTotalPoints: 0,
+  kpi2LogServiceWindow: { min: 300, max: 1440 },
   kpi3Events: [],
   kpi3FileName: "",
   kpi3Results: [],
   kpi3TotalPoints: 0,
   kpi3Intervals: { PA: new Map(), PID: new Map() },
+  kpi3LrvLookup: createEmptyKpi3LrvLookup(),
+  kpi3LrvMapFileName: "",
   selectedInspectorKind: "",
   selectedPlatformId: "",
   selectedAssetKey: "",
@@ -90,11 +100,18 @@ const elements = {
   csvStatus: document.querySelector("#csvStatus"),
   kpi2Input: document.querySelector("#kpi2Input"),
   kpi2Status: document.querySelector("#kpi2Status"),
+  kpi2LogInput: document.querySelector("#kpi2LogInput"),
+  kpi2LogStatus: document.querySelector("#kpi2LogStatus"),
   kpi3Input: document.querySelector("#kpi3Input"),
   kpi3Status: document.querySelector("#kpi3Status"),
+  kpi3LrvMapInput: document.querySelector("#kpi3LrvMapInput"),
+  kpi3LrvMapStatus: document.querySelector("#kpi3LrvMapStatus"),
   playPauseButton: document.querySelector("#playPauseButton"),
   speedSelect: document.querySelector("#speedSelect"),
   liveButton: document.querySelector("#liveButton"),
+  routeViewCopy: document.querySelector("#routeViewCopy"),
+  routeTimelineTab: document.querySelector("#routeTimelineTab"),
+  routeKpi2LogTab: document.querySelector("#routeKpi2LogTab"),
   networkState: document.querySelector("#networkState"),
   networkSummary: document.querySelector("#networkSummary"),
   activeCount: document.querySelector("#activeCount"),
@@ -105,6 +122,7 @@ const elements = {
   kpi3Summary: document.querySelector("#kpi3Summary"),
   kpi2Audit: document.querySelector("#kpi2Audit"),
   kpi3Audit: document.querySelector("#kpi3Audit"),
+  usdComparison: document.querySelector("#usdComparison"),
   disruptionList: document.querySelector("#disruptionList"),
   vehicleList: document.querySelector("#vehicleList"),
   platformMessageTitle: document.querySelector("#platformMessageTitle"),
@@ -122,8 +140,12 @@ function init() {
   elements.timeSlider.addEventListener("input", handleSliderInput);
   elements.csvInput.addEventListener("change", handleCsvSelection);
   elements.kpi2Input.addEventListener("change", handleKpi2Selection);
+  elements.kpi2LogInput.addEventListener("change", handleKpi2LogSelection);
   elements.kpi3Input.addEventListener("change", handleKpi3Selection);
+  elements.kpi3LrvMapInput.addEventListener("change", handleKpi3LrvMapSelection);
   elements.liveButton.addEventListener("click", jumpToLive);
+  elements.routeTimelineTab.addEventListener("click", () => setRouteViewMode("timeline"));
+  elements.routeKpi2LogTab.addEventListener("click", () => setRouteViewMode("kpi2log"));
   window.addEventListener("resize", render);
 
   render();
@@ -227,19 +249,105 @@ function jumpToLive() {
   render();
 }
 
-function render() {
-  const activeDisruptions = getActiveDisruptions();
-  const activeUsdIncidents = getActiveUsdIncidents();
-  const allUsdIncidents = getAllUsdIncidents();
-  const activeVehicles = getActiveVehicles();
+function setRouteViewMode(mode) {
+  if (mode === "kpi2log" && state.kpi2LogIncidents.length === 0) {
+    return;
+  }
 
-  elements.timeSlider.min = String(state.serviceWindow.min);
-  elements.timeSlider.max = String(state.serviceWindow.max);
+  state.routeViewMode = mode;
+  clampSimulationMinuteToRouteWindow();
+  render();
+}
+
+function getEffectiveRouteViewMode() {
+  if (state.routeViewMode === "kpi2log" && state.kpi2LogIncidents.length > 0) {
+    return "kpi2log";
+  }
+
+  return "timeline";
+}
+
+function getCurrentRouteServiceWindow() {
+  if (getEffectiveRouteViewMode() !== "kpi2log") {
+    return state.serviceWindow;
+  }
+
+  if (state.dataSource === "timeline" && state.timelineTrips.length > 0) {
+    return {
+      min: Math.min(state.serviceWindow.min, state.kpi2LogServiceWindow.min),
+      max: Math.max(state.serviceWindow.max, state.kpi2LogServiceWindow.max)
+    };
+  }
+
+  return state.kpi2LogServiceWindow;
+}
+
+function clampSimulationMinuteToRouteWindow() {
+  const windowRange = getCurrentRouteServiceWindow();
+  state.simulationMinute = Math.min(
+    windowRange.max,
+    Math.max(windowRange.min, state.simulationMinute)
+  );
+}
+
+function getCurrentRouteUsdIncidents() {
+  return getEffectiveRouteViewMode() === "kpi2log"
+    ? state.kpi2LogIncidents
+    : getAllUsdIncidents();
+}
+
+function getCurrentRouteKpi2Results() {
+  return getEffectiveRouteViewMode() === "kpi2log"
+    ? state.kpi2LogResults
+    : state.kpi2Results;
+}
+
+function getCurrentRouteKpi2TotalPoints() {
+  return getEffectiveRouteViewMode() === "kpi2log"
+    ? state.kpi2LogTotalPoints
+    : state.kpi2TotalPoints;
+}
+
+function getCurrentRouteKpi2FileLabel() {
+  return getEffectiveRouteViewMode() === "kpi2log"
+    ? state.kpi2LogFileName
+    : state.kpi2FileName;
+}
+
+function hasTimelineBackgroundForKpi2LogView() {
+  return state.dataSource === "timeline" && state.timelineTrips.length > 0;
+}
+
+function getActiveVehiclesForCurrentRouteView() {
+  if (getEffectiveRouteViewMode() === "kpi2log") {
+    return hasTimelineBackgroundForKpi2LogView() ? getActiveVehicles() : [];
+  }
+
+  return getActiveVehicles();
+}
+
+function render() {
+  clampSimulationMinuteToRouteWindow();
+  const routeViewMode = getEffectiveRouteViewMode();
+  const hasTimelineBackground =
+    routeViewMode === "kpi2log" && hasTimelineBackgroundForKpi2LogView();
+  const activeDisruptions = routeViewMode === "kpi2log" ? [] : getActiveDisruptions();
+  const activeUsdIncidents = getCurrentRouteUsdIncidents().filter(
+    (incident) =>
+      state.simulationMinute >= incident.startMinute &&
+      state.simulationMinute <= incident.endMinute
+  );
+  const allUsdIncidents = getCurrentRouteUsdIncidents();
+  const activeVehicles = getActiveVehiclesForCurrentRouteView();
+  const routeWindow = getCurrentRouteServiceWindow();
+
+  elements.timeSlider.min = String(routeWindow.min);
+  elements.timeSlider.max = String(routeWindow.max);
   elements.timeSlider.value = String(Math.round(state.simulationMinute));
   elements.clockLabel.textContent = formatMinute(state.simulationMinute, true);
   elements.timelineLabel.textContent = formatMinute(state.simulationMinute, true);
-  elements.timelineStart.textContent = formatMinute(state.serviceWindow.min, true);
-  elements.timelineEnd.textContent = formatMinute(state.serviceWindow.max, true);
+  elements.timelineStart.textContent = formatMinute(routeWindow.min, true);
+  elements.timelineEnd.textContent = formatMinute(routeWindow.max, true);
   elements.timelineScrubber.classList.toggle("usd-active", activeUsdIncidents.length > 0);
   elements.playPauseButton.textContent = state.isPlaying ? "Pause" : "Play";
   elements.playPauseButton.dataset.state = state.isPlaying ? "pause" : "play";
@@ -254,9 +362,23 @@ function render() {
   elements.kpi2Status.textContent = state.kpi2FileName
     ? `Loaded ${state.kpi2FileName}`
     : "No KPI 02 file loaded.";
+  elements.kpi2LogStatus.textContent = state.kpi2LogFileName
+    ? `Loaded ${state.kpi2LogFileName}`
+    : "No KPI 02 calculation log loaded.";
   elements.kpi3Status.textContent = state.kpi3FileName
     ? `Loaded ${state.kpi3FileName}`
     : "No KPI 03 file loaded.";
+  elements.kpi3LrvMapStatus.textContent = state.kpi3LrvMapFileName
+    ? `Loaded ${state.kpi3LrvMapFileName} (${state.kpi3LrvLookup.byTrip.size} trip LRV mappings).`
+    : "Optional for KPI 03 when the Timeline CSV does not include LRV numbers.";
+  elements.routeViewCopy.textContent =
+    routeViewMode === "kpi2log"
+      ? hasTimelineBackground
+        ? "Imported KPI 2 calculation log overlaid on the loaded timeline playback."
+        : "Imported KPI 2 calculation log replayed against the full corridor."
+      : "All stops from Gungahlin Place to Alinga Street.";
+  elements.routeCanvas.classList.toggle("timeline-background-mode", hasTimelineBackground);
+  updateRouteTabState(routeViewMode);
   renderTimelineUsdOverlay(allUsdIncidents);
 
   renderRoute(activeVehicles, activeDisruptions, activeUsdIncidents);
@@ -265,9 +387,19 @@ function render() {
   renderKpi3Status();
   renderKpi2Audit();
   renderKpi3Audit();
+  renderUsdComparison();
   renderDisruptions(activeUsdIncidents);
   renderVehicles(activeVehicles);
   renderMessageInspector();
+}
+
+function updateRouteTabState(routeViewMode) {
+  const hasLog = state.kpi2LogIncidents.length > 0;
+  elements.routeTimelineTab.classList.toggle("is-active", routeViewMode === "timeline");
+  elements.routeTimelineTab.setAttribute("aria-selected", routeViewMode === "timeline" ? "true" : "false");
+  elements.routeKpi2LogTab.classList.toggle("is-active", routeViewMode === "kpi2log");
+  elements.routeKpi2LogTab.setAttribute("aria-selected", routeViewMode === "kpi2log" ? "true" : "false");
+  elements.routeKpi2LogTab.disabled = !hasLog;
 }
 
 function renderRoute(activeVehicles, activeDisruptions, activeUsdIncidents) {
@@ -438,7 +570,8 @@ function buildDirectionSection({ heading, destination, directionCode, activeVehi
     const pill = document.createElement("div");
     const position = getVehicleDisplayPercent(vehicle, direction);
     const assetTarget = getVehicleAssetTarget(vehicle);
-    const kpi3Points = getCurrentKpi3PointsForVehicle(vehicle);
+    const usesTimelineBackground = getEffectiveRouteViewMode() === "kpi2log";
+    const kpi3Points = usesTimelineBackground ? 0 : getCurrentKpi3PointsForVehicle(vehicle);
     const selected =
       assetTarget.key &&
       state.selectedInspectorKind === "asset" &&
@@ -459,6 +592,9 @@ function buildDirectionSection({ heading, destination, directionCode, activeVehi
           : "var(--on-time)";
 
     wrap.className = "lrv-wrap";
+    if (usesTimelineBackground) {
+      wrap.classList.add("background-vehicle");
+    }
     marker.className = `lrv-marker${kpi3Points > 0 ? " kpi-alert" : ""}${selected ? " selected" : ""}`;
     pill.className = "lrv-pill";
     marker.style.background = tone;
@@ -506,7 +642,7 @@ function buildDirectionSection({ heading, destination, directionCode, activeVehi
 function getKpi2PointsByPlatform(directionCode) {
   const platformMap = new Map();
 
-  state.kpi2Results.forEach((result) => {
+  getCurrentRouteKpi2Results().forEach((result) => {
     if (!result.platformId.endsWith(directionCode)) {
       return;
     }
@@ -567,14 +703,33 @@ function getKpi3PointsAtMinute(result, minute) {
 }
 
 function renderNetworkStatus(activeVehicles, activeDisruptions, activeUsdIncidents) {
+  const routeViewMode = getEffectiveRouteViewMode();
+  const hasTimelineBackground = hasTimelineBackgroundForKpi2LogView();
+
   if (activeUsdIncidents.length > 0) {
     const affectedTrips = new Set(activeUsdIncidents.flatMap((incident) => incident.blockIds)).size;
     elements.networkState.textContent = "USD active";
-    elements.networkSummary.textContent = `Systemic interruption detected: ${affectedTrips} impacted LRVs/blocks for more than 5 minutes.`;
-  } else if (activeDisruptions.length === 0) {
-    elements.networkState.textContent = state.dataSource === "timeline" ? "Timeline playback" : "Normal service";
     elements.networkSummary.textContent =
-      state.dataSource === "timeline"
+      routeViewMode === "kpi2log"
+        ? hasTimelineBackground
+          ? `Imported KPI 2 log shows ${affectedTrips} impacted block${affectedTrips === 1 ? "" : "s"} while the loaded timeline provides vehicle background playback.`
+          : `Imported KPI 2 log shows ${affectedTrips} impacted block${affectedTrips === 1 ? "" : "s"} in the active USD window.`
+        : `Systemic interruption detected: ${affectedTrips} impacted LRVs/blocks for more than 5 minutes.`;
+  } else if (activeDisruptions.length === 0) {
+    elements.networkState.textContent =
+      routeViewMode === "kpi2log"
+        ? hasTimelineBackground
+          ? "KPI 2 log + timeline"
+          : "KPI 2 log view"
+        : state.dataSource === "timeline"
+          ? "Timeline playback"
+          : "Normal service";
+    elements.networkSummary.textContent =
+      routeViewMode === "kpi2log"
+        ? hasTimelineBackground
+          ? "Timeline vehicle playback is shown in the background. No imported KPI 2 log disruption is active at the current simulation time."
+          : "No imported KPI 2 log disruption is active at the current simulation time."
+        : state.dataSource === "timeline"
         ? "Playback is using actual trip events from the loaded CSV."
         : "No active disruption.";
   } else {
@@ -585,6 +740,11 @@ function renderNetworkStatus(activeVehicles, activeDisruptions, activeUsdInciden
   }
 
   elements.activeCount.textContent = String(activeVehicles.length);
+
+  if (routeViewMode === "kpi2log" && !hasTimelineBackground) {
+    elements.activeSummary.textContent = "Vehicle positions are not available in KPI 2 log view.";
+    return;
+  }
 
   if (activeVehicles.length === 0) {
     elements.activeSummary.textContent = "No vehicles in service at this time.";
@@ -598,27 +758,48 @@ function renderNetworkStatus(activeVehicles, activeDisruptions, activeUsdInciden
 }
 
 function renderKpi2Status() {
-  if (!state.kpi2FileName) {
+  const currentResults = getCurrentRouteKpi2Results();
+  const currentTotalPoints = getCurrentRouteKpi2TotalPoints();
+  const routeViewMode = getEffectiveRouteViewMode();
+
+  if (routeViewMode === "kpi2log" && !state.kpi2LogFileName) {
+    elements.kpi2Total.textContent = "--";
+    elements.kpi2Summary.textContent = "Load a KPI 02 calculation log to assess imported stop disruptions.";
+    return;
+  }
+
+  if (routeViewMode !== "kpi2log" && !state.kpi2FileName) {
     elements.kpi2Total.textContent = "--";
     elements.kpi2Summary.textContent = "Load a KPI 02 CSV to assess stop notifications.";
     return;
   }
 
-  if (state.dataSource !== "timeline" || state.timelineUsdPlatformRows.length === 0) {
+  if (
+    routeViewMode !== "kpi2log" &&
+    (state.dataSource !== "timeline" || state.timelineUsdPlatformRows.length === 0)
+  ) {
     elements.kpi2Total.textContent = "0.0";
     elements.kpi2Summary.textContent = "Load a Timeline CSV with USD windows to score KPI 02.";
     return;
   }
 
-  const breachCount = state.kpi2Results.filter((result) => result.totalPoints > 0).length;
-  elements.kpi2Total.textContent = state.kpi2TotalPoints.toFixed(1);
+  const breachCount = currentResults.filter((result) => result.totalPoints > 0).length;
+  elements.kpi2Total.textContent = currentTotalPoints.toFixed(1);
   elements.kpi2Summary.textContent =
     breachCount === 0
-      ? "No KPI 02 point failures detected for the loaded USD windows."
-        : `${breachCount} platform breach${breachCount > 1 ? "es" : ""} across the loaded USD windows.`;
+      ? routeViewMode === "kpi2log"
+        ? "No KPI 02 point failures were recorded in the imported calculation log."
+        : "No KPI 02 point failures detected for the loaded USD windows."
+      : `${breachCount} platform breach${breachCount > 1 ? "es" : ""} across the ${routeViewMode === "kpi2log" ? "imported log windows" : "loaded USD windows"}.`;
 }
 
 function renderKpi3Status() {
+  if (getEffectiveRouteViewMode() === "kpi2log") {
+    elements.kpi3Total.textContent = "--";
+    elements.kpi3Summary.textContent = "KPI 03 is not available in KPI 2 log view.";
+    return;
+  }
+
   if (!state.kpi3FileName) {
     elements.kpi3Total.textContent = "--";
     elements.kpi3Summary.textContent = "Load a KPI 03 CSV to assess onboard notifications.";
@@ -628,7 +809,7 @@ function renderKpi3Status() {
   if (state.dataSource !== "timeline" || state.timelineKpi3Rows.length === 0) {
     elements.kpi3Total.textContent = "0.0";
     elements.kpi3Summary.textContent =
-      "Load a Timeline CSV with identifiable LRVs to score KPI 03.";
+      "Load a Timeline CSV with identifiable LRVs, or add the Wabtec LRV timetable CSV, to score KPI 03.";
     return;
   }
 
@@ -641,22 +822,33 @@ function renderKpi3Status() {
 }
 
 function renderKpi2Audit() {
-  if (!state.kpi2FileName) {
+  const currentResults = getCurrentRouteKpi2Results();
+  const routeViewMode = getEffectiveRouteViewMode();
+
+  if (routeViewMode === "kpi2log" && !state.kpi2LogFileName) {
+    elements.kpi2Audit.innerHTML = '<div class="audit-empty">Load a KPI 02 calculation log to inspect imported platform scoring.</div>';
+    return;
+  }
+
+  if (routeViewMode !== "kpi2log" && !state.kpi2FileName) {
     elements.kpi2Audit.innerHTML = '<div class="audit-empty">Load a KPI 02 CSV to inspect platform-level scoring.</div>';
     return;
   }
 
-  if (state.dataSource !== "timeline" || state.timelineUsdPlatformRows.length === 0) {
+  if (
+    routeViewMode !== "kpi2log" &&
+    (state.dataSource !== "timeline" || state.timelineUsdPlatformRows.length === 0)
+  ) {
     elements.kpi2Audit.innerHTML = '<div class="audit-empty">Load a Timeline CSV with USD windows to build the KPI 02 audit table.</div>';
     return;
   }
 
-  if (state.kpi2Results.length === 0) {
+  if (currentResults.length === 0) {
     elements.kpi2Audit.innerHTML = '<div class="audit-empty">No KPI 02 audit rows were generated for the loaded files.</div>';
     return;
   }
 
-  const rows = state.kpi2Results
+  const rows = currentResults
     .slice()
     .sort((left, right) => {
       const incidentCompare = compareUsdSort(
@@ -710,13 +902,18 @@ function renderKpi2Audit() {
 }
 
 function renderKpi3Audit() {
+  if (getEffectiveRouteViewMode() === "kpi2log") {
+    elements.kpi3Audit.innerHTML = '<div class="audit-empty">KPI 03 audit is unavailable in KPI 2 log view.</div>';
+    return;
+  }
+
   if (!state.kpi3FileName) {
     elements.kpi3Audit.innerHTML = '<div class="audit-empty">Load a KPI 03 CSV to inspect onboard scoring.</div>';
     return;
   }
 
   if (state.dataSource !== "timeline" || state.timelineKpi3Rows.length === 0) {
-    elements.kpi3Audit.innerHTML = '<div class="audit-empty">Load a Timeline CSV with identifiable LRVs to build the KPI 03 audit table.</div>';
+    elements.kpi3Audit.innerHTML = '<div class="audit-empty">Load a Timeline CSV with identifiable LRVs, or add the Wabtec LRV timetable CSV, to build the KPI 03 audit table.</div>';
     return;
   }
 
@@ -778,6 +975,72 @@ function renderKpi3Audit() {
   `;
 }
 
+function renderUsdComparison() {
+  const comparison = buildUsdComparisonModel();
+
+  if (state.dataSource !== "timeline" || state.timelineUsdIncidents.length === 0) {
+    elements.usdComparison.innerHTML =
+      '<div class="audit-empty">Load a Timeline CSV to compare timeline-derived USD identification.</div>';
+    return;
+  }
+
+  if (state.kpi2LogIncidents.length === 0) {
+    elements.usdComparison.innerHTML =
+      '<div class="audit-empty">Load a KPI 02 calculation log to compare against the app method.</div>';
+    return;
+  }
+
+  if (!comparison || comparison.rows.length === 0) {
+    elements.usdComparison.innerHTML =
+      '<div class="audit-empty">No USD comparison rows were generated.</div>';
+    return;
+  }
+
+  const rows = comparison.rows
+    .map((row) => {
+      const statusClass =
+        row.status === "Matched" ? "ok" : row.status === "Timeline only" ? "delay" : "alert";
+      return `
+        <tr>
+          <td><span class="badge ${statusClass}">${row.status}</span></td>
+          <td>${row.timeline ? formatIncidentLabel(row.timeline.id) : "—"}</td>
+          <td>${row.timeline ? formatIncidentWindow(row.timeline) : "—"}</td>
+          <td>${row.log ? formatIncidentLabel(row.log.id) : "—"}</td>
+          <td>${row.log ? formatIncidentWindow(row.log) : "—"}</td>
+          <td>${Number.isFinite(row.startDeltaMinutes) ? formatSignedMinuteDelta(row.startDeltaMinutes) : "—"}</td>
+          <td>${Number.isFinite(row.endDeltaMinutes) ? formatSignedMinuteDelta(row.endDeltaMinutes) : "—"}</td>
+          <td>${formatScopeComparison(row.platformComparison, "platform")}</td>
+          <td>${formatScopeComparison(row.blockComparison, "block")}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  elements.usdComparison.innerHTML = `
+    <div class="comparison-summary">
+      <span class="badge ok">${comparison.matchedCount} matched</span>
+      <span class="badge delay">${comparison.timelineOnlyCount} timeline-only</span>
+      <span class="badge alert">${comparison.logOnlyCount} log-only</span>
+    </div>
+    <table class="audit-table usd-comparison-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>App USD</th>
+          <th>App Window</th>
+          <th>Log USD</th>
+          <th>Log Window</th>
+          <th>Start Delta</th>
+          <th>End Delta</th>
+          <th>Platforms</th>
+          <th>Blocks</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
 function renderDisruptions(activeUsdIncidents) {
   if (activeUsdIncidents.length === 0) {
     elements.disruptionList.innerHTML = `
@@ -798,8 +1061,12 @@ function renderDisruptions(activeUsdIncidents) {
     const item = document.createElement("article");
     item.className = "stack-item";
     const causeEvent = event.systemicTrigger || event.triggerEvent;
-    const kpi2Rows = state.kpi2Results.filter((result) => result.incidentId === event.id);
-    const kpi3Rows = state.kpi3Results.filter((result) => result.incidentId === event.id);
+    const routeViewMode = getEffectiveRouteViewMode();
+    const kpi2Rows = getCurrentRouteKpi2Results().filter((result) => result.incidentId === event.id);
+    const kpi3Rows =
+      routeViewMode === "kpi2log"
+        ? []
+        : state.kpi3Results.filter((result) => result.incidentId === event.id);
     const incidentPoints = roundToTenth(kpi2Rows.reduce((sum, row) => sum + row.totalPoints, 0));
     const incidentKpi3Points = roundToTenth(
       kpi3Rows.reduce((sum, row) => sum + row.totalPoints, 0)
@@ -823,8 +1090,8 @@ function renderDisruptions(activeUsdIncidents) {
       <p>${event.summary}</p>
       <p>${formatUsdCauseSummary(causeEvent)}</p>
       <p>${formatUsdStopSummary(event.endEvent)}</p>
-      ${state.kpi2FileName ? `<p>KPI 02 points for this USD: ${incidentPoints.toFixed(1)}</p>` : ""}
-      ${state.kpi3FileName ? `<p>KPI 03 points for this USD: ${incidentKpi3Points.toFixed(1)}</p>` : ""}
+      ${getCurrentRouteKpi2FileLabel() ? `<p>KPI 02 points for this USD: ${incidentPoints.toFixed(1)}</p>` : ""}
+      ${routeViewMode !== "kpi2log" && state.kpi3FileName ? `<p>KPI 03 points for this USD: ${incidentKpi3Points.toFixed(1)}</p>` : ""}
       ${breachLines}
       ${kpi3Lines}
       <div class="badge-row">
@@ -839,7 +1106,182 @@ function renderDisruptions(activeUsdIncidents) {
   elements.disruptionList.replaceChildren(fragment);
 }
 
+function buildUsdComparisonModel() {
+  if (
+    state.dataSource !== "timeline" ||
+    state.timelineUsdIncidents.length === 0 ||
+    state.kpi2LogIncidents.length === 0
+  ) {
+    return null;
+  }
+
+  const timelineIncidents = [...state.timelineUsdIncidents].sort(sortIncidentsForComparison);
+  const logIncidents = [...state.kpi2LogIncidents].sort(sortIncidentsForComparison);
+  const unmatchedLogIds = new Set(logIncidents.map((incident) => incident.id));
+  const logById = new Map(logIncidents.map((incident) => [incident.id, incident]));
+  const rows = [];
+
+  timelineIncidents.forEach((timelineIncident) => {
+    const bestMatch = logIncidents
+      .filter((logIncident) => unmatchedLogIds.has(logIncident.id))
+      .map((logIncident) => ({
+        logIncident,
+        score: getUsdComparisonScore(timelineIncident, logIncident)
+      }))
+      .sort((left, right) => right.score - left.score)[0];
+
+    if (bestMatch && bestMatch.score > 0) {
+      unmatchedLogIds.delete(bestMatch.logIncident.id);
+      rows.push(createUsdComparisonRow(timelineIncident, bestMatch.logIncident));
+      return;
+    }
+
+    rows.push(createUsdComparisonRow(timelineIncident, null));
+  });
+
+  unmatchedLogIds.forEach((logId) => {
+    rows.push(createUsdComparisonRow(null, logById.get(logId)));
+  });
+
+  rows.sort((left, right) => {
+    const leftMinute = left.timeline?.startMinute ?? left.log?.startMinute ?? 0;
+    const rightMinute = right.timeline?.startMinute ?? right.log?.startMinute ?? 0;
+    if (leftMinute !== rightMinute) {
+      return leftMinute - rightMinute;
+    }
+
+    return String(left.timeline?.id || left.log?.id || "").localeCompare(
+      String(right.timeline?.id || right.log?.id || "")
+    );
+  });
+
+  return {
+    rows,
+    matchedCount: rows.filter((row) => row.status === "Matched").length,
+    timelineOnlyCount: rows.filter((row) => row.status === "Timeline only").length,
+    logOnlyCount: rows.filter((row) => row.status === "Log only").length
+  };
+}
+
+function sortIncidentsForComparison(left, right) {
+  const startCompare = left.startMinute - right.startMinute;
+  if (startCompare !== 0) {
+    return startCompare;
+  }
+
+  return compareUsdSort(left.id, left.numericId, right.id, right.numericId);
+}
+
+function getUsdComparisonScore(timelineIncident, logIncident) {
+  const timeOverlap = getIntervalOverlapMinutes(timelineIncident, logIncident);
+  const platformOverlap = countIntersection(
+    timelineIncident.platformIds || [],
+    logIncident.platformIds || []
+  );
+  const blockOverlap = countIntersection(
+    timelineIncident.blockIds || [],
+    logIncident.blockIds || []
+  );
+  const directionOverlap = countIntersection(
+    timelineIncident.directionCodes || [],
+    logIncident.directionCodes || []
+  );
+
+  if (timeOverlap === 0 && platformOverlap === 0 && blockOverlap === 0) {
+    return 0;
+  }
+
+  const endpointCloseness = Math.max(
+    0,
+    240 -
+      (Math.abs(timelineIncident.startMinute - logIncident.startMinute) +
+        Math.abs(timelineIncident.endMinute - logIncident.endMinute))
+  );
+
+  return (
+    platformOverlap * 10000 +
+    blockOverlap * 2500 +
+    directionOverlap * 1000 +
+    timeOverlap * 20 +
+    endpointCloseness
+  );
+}
+
+function createUsdComparisonRow(timelineIncident, logIncident) {
+  return {
+    status: timelineIncident && logIncident ? "Matched" : timelineIncident ? "Timeline only" : "Log only",
+    timeline: timelineIncident,
+    log: logIncident,
+    startDeltaMinutes:
+      timelineIncident && logIncident ? logIncident.startMinute - timelineIncident.startMinute : null,
+    endDeltaMinutes:
+      timelineIncident && logIncident ? logIncident.endMinute - timelineIncident.endMinute : null,
+    platformComparison: compareMembers(
+      timelineIncident?.platformIds || [],
+      logIncident?.platformIds || []
+    ),
+    blockComparison: compareMembers(
+      timelineIncident?.blockIds || [],
+      logIncident?.blockIds || []
+    )
+  };
+}
+
+function compareMembers(leftItems, rightItems) {
+  const left = new Set(leftItems.filter(Boolean));
+  const right = new Set(rightItems.filter(Boolean));
+  const shared = [...left].filter((item) => right.has(item));
+
+  return {
+    leftCount: left.size,
+    rightCount: right.size,
+    sharedCount: shared.length
+  };
+}
+
+function countIntersection(leftItems, rightItems) {
+  return compareMembers(leftItems, rightItems).sharedCount;
+}
+
+function getIntervalOverlapMinutes(left, right) {
+  return Math.max(0, Math.min(left.endMinute, right.endMinute) - Math.max(left.startMinute, right.startMinute));
+}
+
+function formatIncidentWindow(incident) {
+  return `${formatMinute(incident.startMinute, true)}-${formatMinute(incident.endMinute, true)}`;
+}
+
+function formatScopeComparison(comparison, label) {
+  if (!comparison || (comparison.leftCount === 0 && comparison.rightCount === 0)) {
+    return "—";
+  }
+
+  return `
+    <span>${comparison.sharedCount} shared ${label}${comparison.sharedCount === 1 ? "" : "s"}</span>
+    <small>app ${comparison.leftCount} • log ${comparison.rightCount}</small>
+  `;
+}
+
+function formatSignedMinuteDelta(deltaMinutes) {
+  const sign = deltaMinutes > 0 ? "+" : deltaMinutes < 0 ? "-" : "";
+  const totalSeconds = Math.round(Math.abs(deltaMinutes) * 60);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${sign}${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
 function renderVehicles(activeVehicles) {
+  if (getEffectiveRouteViewMode() === "kpi2log" && !hasTimelineBackgroundForKpi2LogView()) {
+    elements.vehicleList.innerHTML = `
+      <article class="stack-item">
+        <h4>No vehicle playback in this tab</h4>
+        <p>The KPI 2 calculation log provides disruption windows, not live LRV positions.</p>
+      </article>
+    `;
+    return;
+  }
+
   if (activeVehicles.length === 0) {
     elements.vehicleList.innerHTML = `
       <article class="stack-item">
@@ -851,6 +1293,7 @@ function renderVehicles(activeVehicles) {
   }
 
   const fragment = document.createDocumentFragment();
+  const routeViewMode = getEffectiveRouteViewMode();
 
   activeVehicles
     .sort((left, right) => left.progressPercent - right.progressPercent)
@@ -860,6 +1303,7 @@ function renderVehicles(activeVehicles) {
       item.innerHTML = `
         <h4>${vehicle.label}</h4>
         <p>${vehicle.locationLabel}</p>
+        ${routeViewMode === "kpi2log" ? "<p>Timeline background vehicle in KPI 2 log view.</p>" : ""}
         <div class="badge-row">
           <span class="badge ${vehicle.delayMinutes > 0 ? "delay" : "ok"}">${
             vehicle.delayMinutes > 0 ? `${vehicle.delayMinutes} min late` : "On time"
@@ -1063,10 +1507,15 @@ function handleCsvSelection(event) {
 
       state.dataSource = "timeline";
       const usdModel = buildTimelineUsdModel(rows);
+      state.timelineRows = rows;
       state.timelineTrips = timelineTrips;
       state.timelineUsdIncidents = usdModel.incidents;
       state.timelineUsdPlatformRows = usdModel.platformRows;
-      state.timelineKpi3Rows = buildTimelineKpi3Windows(rows, usdModel.incidents);
+      state.timelineKpi3Rows = buildTimelineKpi3Windows(
+        rows,
+        usdModel.incidents,
+        state.kpi3LrvLookup
+      );
       state.timelineFileName = file.name;
       state.serviceWindow = {
         min: Math.max(0, minMinute - 5),
@@ -1078,6 +1527,7 @@ function handleCsvSelection(event) {
       render();
     } catch (error) {
       state.dataSource = "mock";
+      state.timelineRows = [];
       state.timelineTrips = [];
       state.timelineUsdIncidents = [];
       state.timelineUsdPlatformRows = [];
@@ -1127,6 +1577,40 @@ function handleKpi2Selection(event) {
   reader.readAsText(file);
 }
 
+function handleKpi2LogSelection(event) {
+  const [file] = event.target.files || [];
+  if (!file) {
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.addEventListener("load", () => {
+    try {
+      const model = parseKpi2CalculationLog(String(reader.result || ""));
+      state.kpi2LogFileName = file.name;
+      state.kpi2LogIncidents = model.incidents;
+      state.kpi2LogPlatformRows = model.platformRows;
+      state.kpi2LogResults = model.results;
+      state.kpi2LogTotalPoints = model.totalPoints;
+      state.kpi2LogServiceWindow = model.serviceWindow;
+      state.routeViewMode = "kpi2log";
+      clampSimulationMinuteToRouteWindow();
+      render();
+    } catch (error) {
+      state.kpi2LogFileName = "";
+      state.kpi2LogIncidents = [];
+      state.kpi2LogPlatformRows = [];
+      state.kpi2LogResults = [];
+      state.kpi2LogTotalPoints = 0;
+      state.kpi2LogServiceWindow = { min: 300, max: 1440 };
+      state.routeViewMode = "timeline";
+      elements.kpi2LogStatus.textContent = `KPI 02 log load failed: ${error.message}`;
+    }
+  });
+
+  reader.readAsText(file);
+}
+
 function handleKpi3Selection(event) {
   const [file] = event.target.files || [];
   if (!file) {
@@ -1152,6 +1636,43 @@ function handleKpi3Selection(event) {
   });
 
   reader.readAsText(file);
+}
+
+function handleKpi3LrvMapSelection(event) {
+  const [file] = event.target.files || [];
+  if (!file) {
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.addEventListener("load", () => {
+    try {
+      state.kpi3LrvLookup = buildKpi3LrvLookupFromTimetableText(String(reader.result || ""));
+      state.kpi3LrvMapFileName = file.name;
+      rebuildTimelineKpi3Rows();
+      refreshKpi3Results();
+      render();
+    } catch (error) {
+      state.kpi3LrvLookup = createEmptyKpi3LrvLookup();
+      state.kpi3LrvMapFileName = "";
+      rebuildTimelineKpi3Rows();
+      refreshKpi3Results();
+      elements.kpi3LrvMapStatus.textContent = `LRV timetable load failed: ${error.message}`;
+    }
+  });
+
+  reader.readAsText(file);
+}
+
+function rebuildTimelineKpi3Rows() {
+  state.timelineKpi3Rows =
+    state.dataSource === "timeline" && state.timelineRows.length > 0
+      ? buildTimelineKpi3Windows(
+          state.timelineRows,
+          state.timelineUsdIncidents,
+          state.kpi3LrvLookup
+        )
+      : [];
 }
 
 function refreshKpi2Results() {
@@ -1422,6 +1943,10 @@ function isKpi3ResultActiveForVehicle(result, vehicle, assetKey, minute) {
 }
 
 function getCurrentKpi3PointsForVehicle(vehicle) {
+  if (getEffectiveRouteViewMode() === "kpi2log") {
+    return 0;
+  }
+
   const assetKey = getVehicleAssetTarget(vehicle).key;
 
   if (!assetKey || vehicle.status === "ok") {
@@ -1440,10 +1965,12 @@ function getCurrentKpi3PointsForVehicle(vehicle) {
 function getVehicleTooltipPointLines(vehicle) {
   const lines = [];
   const platformIds = [...new Set(vehicle.tooltipPlatformIds || [])];
+  const routeKpi2Results = getCurrentRouteKpi2Results();
+  const routeViewMode = getEffectiveRouteViewMode();
 
   platformIds.forEach((platformId) => {
     const points = roundToTenth(
-      state.kpi2Results
+      routeKpi2Results
         .filter((result) => result.platformId === platformId)
         .reduce((sum, result) => sum + getKpi2PointsAtMinute(result, state.simulationMinute), 0)
     );
@@ -1454,7 +1981,7 @@ function getVehicleTooltipPointLines(vehicle) {
   });
 
   const assetTarget = getVehicleAssetTarget(vehicle);
-  if (assetTarget.key) {
+  if (routeViewMode !== "kpi2log" && assetTarget.key) {
     const points = getCurrentKpi3PointsForVehicle(vehicle);
 
     if (points > 0) {
@@ -1531,6 +2058,14 @@ function getTimelineVehicleState(trip, minute) {
 }
 
 function parseCsv(text) {
+  const rows = parseCsvRows(text);
+  const [header, ...data] = rows;
+  return data.map((values) =>
+    Object.fromEntries(header.map((key, index) => [key, values[index] ?? ""]))
+  );
+}
+
+function parseCsvRows(text) {
   const rows = [];
   let current = "";
   let row = [];
@@ -1570,10 +2105,255 @@ function parseCsv(text) {
     rows.push(row);
   }
 
-  const [header, ...data] = rows;
-  return data.map((values) =>
-    Object.fromEntries(header.map((key, index) => [key, values[index] ?? ""]))
-  );
+  return rows;
+}
+
+function parseKpi2CalculationLog(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+  const concurrentDisruptions = [];
+  const concurrentByKey = new Map();
+  const blockWindows = [];
+  const platformWindowMap = new Map();
+  const platformWindows = [];
+  const totalLineMatch = text.match(/KPI 2 Total penalty points:\s*([0-9.]+)/i);
+
+  lines.forEach((line) => {
+    const message = stripLogPrefix(line);
+    if (!message) {
+      return;
+    }
+
+    const blockMatch = message.match(
+      /^Block:\s+(.+?)\s+->\s+(\d{2}:\d{2}:\d{2}) to (\d{2}:\d{2}:\d{2})/
+    );
+    if (blockMatch) {
+      const [, blockId, startText, endText] = blockMatch;
+      blockWindows.push({
+        blockId: blockId.trim(),
+        startMinute: parseClockMinute(startText),
+        endMinute: parseClockMinute(endText)
+      });
+      return;
+    }
+
+    const concurrentMatch = message.match(/^(\d{2}:\d{2}:\d{2}) to (\d{2}:\d{2}:\d{2}) \(/);
+    if (concurrentMatch && !message.startsWith("Platform:")) {
+      const [, startText, endText] = concurrentMatch;
+      const startMinute = parseClockMinute(startText);
+      const endMinute = parseClockMinute(endText);
+      const numericId = concurrentDisruptions.length + 1;
+      const incident = {
+        id: `usd-${numericId}`,
+        numericId,
+        startMinute,
+        endMinute
+      };
+      concurrentDisruptions.push(incident);
+      concurrentByKey.set(`${startText}-${endText}`, incident);
+      return;
+    }
+
+    const windowMatch = message.match(
+      /^Platform:\s+([A-Z]{3}\d)\s+->\s+(\d{2}:\d{2}:\d{2}) to (\d{2}:\d{2}:\d{2}).*?due to concurrent disruption (\d{2}:\d{2}:\d{2}) to (\d{2}:\d{2}:\d{2})/
+    );
+    if (!windowMatch) {
+      return;
+    }
+
+    const [, platformToken, startText, endText, incidentStartText, incidentEndText] = windowMatch;
+    const incident =
+      concurrentByKey.get(`${incidentStartText}-${incidentEndText}`) ||
+      {
+        id: `usd-${concurrentDisruptions.length + 1}`,
+        numericId: concurrentDisruptions.length + 1,
+        startMinute: parseClockMinute(incidentStartText),
+        endMinute: parseClockMinute(incidentEndText)
+      };
+    const platformId = normaliseKpi2Platform(platformToken);
+    const stopCode = platformId.slice(0, 3);
+    const stopIndex = stops.findIndex((stop) => stop.shortName === stopCode);
+    const directionCode = platformId.endsWith("NB") ? "NB" : "SB";
+    const startMinute = parseClockMinute(startText);
+    const endMinute = parseClockMinute(endText);
+    const key = `${platformId}::${startText}::${endText}::${incident.id}`;
+
+    let windowRow = platformWindowMap.get(key);
+    if (!windowRow) {
+      windowRow = {
+        key,
+        incidentId: incident.id,
+        numericId: incident.numericId,
+        platformId,
+        stopCode,
+        stopIndex,
+        directionCode,
+        startMinute,
+        endMinute,
+        triggerEvent: {
+          platformId,
+          eventType: "Concurrent disruption",
+          thresholdMinute: incident.startMinute,
+          differenceSeconds: null
+        },
+        incidentTriggerEvent: {
+          platformId,
+          eventType: "Concurrent disruption",
+          thresholdMinute: incident.startMinute,
+          differenceSeconds: null
+        },
+        endEvent: {
+          platformId,
+          eventType: "Concurrent disruption",
+          resolvedMinute: endMinute,
+          reason: "Imported from KPI 2 calculation log"
+        },
+        initialBreach: false,
+        continuousBreach: false,
+        initialBreachMinute: null,
+        continuousBreachMinute: null,
+        loggedTotalPoints: null
+      };
+      platformWindowMap.set(key, windowRow);
+      platformWindows.push(windowRow);
+    }
+
+    const initialFailureMatch = message.match(
+      /failed to play an initial (PA|PID) message by (\d{2}:\d{2}:\d{2})/i
+    );
+    if (initialFailureMatch) {
+      windowRow.initialBreach = true;
+      windowRow.initialBreachMinute = Number.isFinite(windowRow.initialBreachMinute)
+        ? Math.min(windowRow.initialBreachMinute, parseClockMinute(initialFailureMatch[2]))
+        : parseClockMinute(initialFailureMatch[2]);
+    }
+
+    const continuousFailureMatch = message.match(
+      /failed to play a continued (PA|PID) message by (\d{2}:\d{2}:\d{2})/i
+    );
+    if (continuousFailureMatch) {
+      windowRow.continuousBreach = true;
+      windowRow.continuousBreachMinute = Number.isFinite(windowRow.continuousBreachMinute)
+        ? Math.min(windowRow.continuousBreachMinute, parseClockMinute(continuousFailureMatch[2]))
+        : parseClockMinute(continuousFailureMatch[2]);
+    }
+
+    const accruedMatch = message.match(/accrued ([0-9.]+)/i);
+    if (accruedMatch) {
+      windowRow.loggedTotalPoints = Number(accruedMatch[1]);
+    }
+  });
+
+  if (concurrentDisruptions.length === 0 || platformWindows.length === 0) {
+    throw new Error("No usable disruption windows found in calculation log.");
+  }
+
+  const platformRows = platformWindows
+    .filter((row) => row.stopIndex >= 0)
+    .map((row) => ({
+      incidentId: row.incidentId,
+      numericId: row.numericId,
+      platformId: row.platformId,
+      stopCode: row.stopCode,
+      stopIndex: row.stopIndex,
+      directionCode: row.directionCode,
+      tripId: "",
+      blockId: "",
+      lrvId: "",
+      startMinute: row.startMinute,
+      endMinute: row.endMinute,
+      triggerEvent: row.triggerEvent,
+      incidentTriggerEvent: row.incidentTriggerEvent,
+      endEvent: row.endEvent
+    }));
+  const incidents = buildUiUsdIncidents(platformRows).map((incident) => {
+    const blockIds = [...new Set(
+      blockWindows
+        .filter((window) => rowsOverlap(window, incident))
+        .map((window) => window.blockId)
+    )];
+
+    return {
+      ...incident,
+      blockIds,
+      summary: [
+        "Imported from KPI 2 calculation log.",
+        `${incident.platformIds.length} platform${incident.platformIds.length > 1 ? "s" : ""} mapped to this concurrent disruption.`,
+        `${blockIds.length} block${blockIds.length === 1 ? "" : "s"} overlapped this window.`
+      ].join(" ")
+    };
+  });
+  const results = platformWindows
+    .filter((row) => row.stopIndex >= 0)
+    .map((row) => {
+      const lengthMinutes = Math.max(0, row.endMinute - row.startMinute);
+      const lengthCondition = lengthMinutes > 4;
+      const initialBreach = lengthCondition && row.initialBreach;
+      const continuousBreach = lengthCondition && row.continuousBreach;
+      const initialPoints = initialBreach ? 0.5 : 0;
+      const continuousPoints = continuousBreach ? 2 : 0;
+      return {
+        incidentId: row.incidentId,
+        numericId: row.numericId,
+        platformId: row.platformId,
+        startMinute: row.startMinute,
+        endMinute: row.endMinute,
+        lengthMinutes,
+        lengthCondition,
+        initialBreach,
+        continuousBreach,
+        initialBreachMinute: initialBreach ? row.initialBreachMinute : null,
+        continuousBreachMinute: continuousBreach ? row.continuousBreachMinute : null,
+        initialPoints,
+        continuousPoints,
+        totalPoints: initialPoints + continuousPoints,
+        loggedTotalPoints: row.loggedTotalPoints
+      };
+    });
+  const totalPoints = Number.isFinite(Number(totalLineMatch?.[1]))
+    ? roundToTenth(Number(totalLineMatch[1]))
+    : roundToTenth(results.reduce((sum, row) => sum + row.totalPoints, 0));
+  const allMinutes = [
+    ...concurrentDisruptions.flatMap((incident) => [incident.startMinute, incident.endMinute]),
+    ...platformRows.flatMap((row) => [row.startMinute, row.endMinute]),
+    ...results.flatMap((row) =>
+      [row.initialBreachMinute, row.continuousBreachMinute].filter((value) =>
+        Number.isFinite(value)
+      )
+    )
+  ];
+  const minMinute = Math.max(0, Math.floor(Math.min(...allMinutes) - 5));
+  const maxMinute = Math.min(1440, Math.ceil(Math.max(...allMinutes) + 5));
+
+  return {
+    incidents,
+    platformRows,
+    results,
+    totalPoints,
+    serviceWindow: {
+      min: minMinute,
+      max: maxMinute
+    }
+  };
+}
+
+function stripLogPrefix(line) {
+  return String(line || "").replace(
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?:\s*/,
+    ""
+  ).trim();
+}
+
+function parseClockMinute(value) {
+  const match = String(value || "").match(/^(\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const [, hour, minute, second] = match;
+  return Number(hour) * 60 + Number(minute) + Number(second) / 60;
 }
 
 function buildTimelineTrips(rows) {
@@ -1702,21 +2482,13 @@ function shouldShowTripLine(vehicle) {
 }
 
 function buildTimelineUsdModel(rows) {
-  const departureRows = rows
+  const movementRows = rows
     .map(normalizeTimelineDepartureRow)
     .filter(Boolean)
-    .filter(
-      (row) =>
-        row.arrDep === "DEP" &&
-        !row.tripId.startsWith("R") &&
-        row.stopCode !== "SFD"
-    )
+    .filter((row) => !row.tripId.startsWith("R"));
+  const departureRows = movementRows
+    .filter((row) => row.arrDep === "DEP")
     .sort((left, right) => {
-      const directionCompare = left.directionCode.localeCompare(right.directionCode);
-      if (directionCompare !== 0) {
-        return directionCompare;
-      }
-
       const platformCompare = left.platformId.localeCompare(right.platformId);
       if (platformCompare !== 0) {
         return platformCompare;
@@ -1733,15 +2505,514 @@ function buildTimelineUsdModel(rows) {
     };
   }
 
-  const markedRows = markTimelineUsdStatuses(departureRows);
-  const delayTable2 = buildDelayTable2Rows(markedRows);
-  const rawPlatformRows = buildUnplannedServiceDisruption2Rows(delayTable2);
+  const blockWindows = buildWabtecBlockDisruptionWindows(movementRows);
+  const concurrentWindows = buildWabtecConcurrentDisruptionWindows(blockWindows);
+  const delayTable2 = buildWabtecPlatformDelayWindows(departureRows);
+  const rawPlatformRows = buildWabtecPlatformUsdRows(concurrentWindows, delayTable2);
 
   return {
     delayTable2,
+    blockWindows,
+    concurrentWindows,
     platformRows: rawPlatformRows,
     incidents: buildUiUsdIncidents(rawPlatformRows)
   };
+}
+
+function buildWabtecBlockDisruptionWindows(movementRows) {
+  const rowsByBlock = groupTimelineRows(movementRows, (row) => row.blockId);
+  const blockWindows = [];
+
+  rowsByBlock.forEach((blockRows) => {
+    const sortedRows = [...blockRows].sort(compareTimelineRowsByTime);
+    let currentWindow = null;
+    let lastDelayedDeparture = null;
+
+    sortedRows.forEach((row) => {
+      if (row.arrDep !== "DEP") {
+        return;
+      }
+
+      if (isTimelineUsdDelayed(row)) {
+        if (!currentWindow) {
+          currentWindow = {
+            blockId: row.blockId,
+            startMinute: row.scheduledMinute,
+            endMinute: row.scheduledMinute,
+            triggerEvent: buildWabtecUsdTriggerEvent(row),
+            endEvent: null,
+            tripIds: new Set(),
+            lrvIds: new Set(),
+            delayedRows: []
+          };
+        }
+
+        addTimelineRowIdentity(currentWindow, row);
+        currentWindow.delayedRows.push(row);
+        currentWindow.endMinute = row.actualMinute;
+        lastDelayedDeparture = row;
+        return;
+      }
+
+      if (!currentWindow) {
+        return;
+      }
+
+      currentWindow.endMinute = row.actualMinute;
+      currentWindow.endEvent = buildWabtecUsdEndEvent(
+        row,
+        row.actualMinute,
+        "delay recovered below 5 minutes"
+      );
+      pushCompletedWabtecBlockWindow(blockWindows, currentWindow);
+      currentWindow = null;
+      lastDelayedDeparture = null;
+    });
+
+    if (currentWindow && lastDelayedDeparture) {
+      const fallbackEndRow = findWabtecBlockFallbackEndRow(sortedRows, lastDelayedDeparture);
+      const resolvedMinute = fallbackEndRow
+        ? fallbackEndRow.scheduledMinute
+        : lastDelayedDeparture.actualMinute;
+      currentWindow.endMinute = resolvedMinute;
+      currentWindow.endEvent = buildWabtecUsdEndEvent(
+        fallbackEndRow || lastDelayedDeparture,
+        resolvedMinute,
+        fallbackEndRow
+          ? "scheduled end of the available block movement"
+          : "last delayed departure in the active block window"
+      );
+      pushCompletedWabtecBlockWindow(blockWindows, currentWindow);
+    }
+  });
+
+  return blockWindows.sort((left, right) => left.startMinute - right.startMinute);
+}
+
+function pushCompletedWabtecBlockWindow(blockWindows, window) {
+  if (!Number.isFinite(window.endMinute) || window.endMinute - window.startMinute <= 5) {
+    return;
+  }
+
+  blockWindows.push({
+    ...window,
+    windowKey: `block-window-${blockWindows.length + 1}`,
+    tripIds: [...window.tripIds],
+    lrvIds: [...window.lrvIds],
+    delayedRows: [...window.delayedRows]
+  });
+}
+
+function findWabtecBlockFallbackEndRow(sortedRows, lastDelayedDeparture) {
+  const lastDelayedSecond = minuteToSecond(lastDelayedDeparture.scheduledMinute);
+  return (
+    [...sortedRows]
+      .reverse()
+      .find((row) => minuteToSecond(row.scheduledMinute) >= lastDelayedSecond) || null
+  );
+}
+
+function buildWabtecConcurrentDisruptionWindows(blockWindows) {
+  const eventsBySecond = new Map();
+
+  blockWindows.forEach((window, index) => {
+    const windowKey = window.windowKey || `block-window-${index + 1}`;
+    const startSecond = minuteToSecond(window.startMinute);
+    const endSecond = minuteToSecond(window.endMinute);
+
+    if (endSecond <= startSecond) {
+      return;
+    }
+
+    addTimelineSweepEvent(eventsBySecond, startSecond, {
+      type: "start",
+      window: { ...window, windowKey }
+    });
+    addTimelineSweepEvent(eventsBySecond, endSecond, {
+      type: "end",
+      window: { ...window, windowKey }
+    });
+  });
+
+  const eventSeconds = [...eventsBySecond.keys()].sort((left, right) => left - right);
+  if (eventSeconds.length === 0) {
+    return [];
+  }
+
+  const activeWindows = new Map();
+  const concurrentSegments = [];
+  let previousSecond = eventSeconds[0];
+
+  eventSeconds.forEach((eventSecond) => {
+    if (eventSecond > previousSecond && activeWindows.size > 1) {
+      appendWabtecConcurrentSegment(
+        concurrentSegments,
+        previousSecond,
+        eventSecond,
+        [...activeWindows.values()]
+      );
+    }
+
+    const events = eventsBySecond.get(eventSecond) || [];
+    events
+      .filter((event) => event.type === "end")
+      .forEach((event) => {
+        activeWindows.delete(event.window.windowKey);
+      });
+    events
+      .filter((event) => event.type === "start")
+      .forEach((event) => {
+        activeWindows.set(event.window.windowKey, event.window);
+      });
+
+    previousSecond = eventSecond;
+  });
+
+  return concurrentSegments.map((segment, index) => ({
+    id: `usd-${index + 1}`,
+    numericId: index + 1,
+    startMinute: segment.startSecond / 60,
+    endMinute: segment.endSecond / 60,
+    blockIds: [...segment.blockIds],
+    tripIds: [...segment.tripIds],
+    lrvIds: [...segment.lrvIds],
+    blockWindows: [...segment.blockWindows.values()]
+  }));
+}
+
+function appendWabtecConcurrentSegment(segments, startSecond, endSecond, activeWindows) {
+  if (endSecond <= startSecond) {
+    return;
+  }
+
+  const previous = segments[segments.length - 1];
+  const segment =
+    previous && previous.endSecond === startSecond
+      ? previous
+      : {
+          startSecond,
+          endSecond: startSecond,
+          blockIds: new Set(),
+          tripIds: new Set(),
+          lrvIds: new Set(),
+          blockWindows: new Map()
+        };
+
+  if (segment !== previous) {
+    segments.push(segment);
+  }
+
+  segment.endSecond = endSecond;
+  activeWindows.forEach((window) => {
+    if (window.blockId) {
+      segment.blockIds.add(window.blockId);
+    }
+    (window.tripIds || []).forEach((tripId) => segment.tripIds.add(tripId));
+    (window.lrvIds || []).forEach((lrvId) => segment.lrvIds.add(lrvId));
+    segment.blockWindows.set(window.windowKey, window);
+  });
+}
+
+function buildWabtecPlatformDelayWindows(departureRows) {
+  const rowsByPlatform = groupTimelineRows(departureRows, (row) => row.platformId);
+  const windows = [];
+
+  rowsByPlatform.forEach((platformRows) => {
+    const sortedRows = [...platformRows].sort(compareTimelineRowsByTime);
+    let currentWindow = null;
+
+    sortedRows.forEach((row) => {
+      if (isTimelineUsdDelayed(row)) {
+        if (!currentWindow) {
+          currentWindow = {
+            platformId: row.platformId,
+            stopCode: row.stopCode,
+            stopIndex: row.stopIndex,
+            directionCode: row.directionCode,
+            startMinute: row.scheduledMinute,
+            endMinute: row.actualMinute,
+            triggerEvent: buildWabtecUsdTriggerEvent(row),
+            endEvent: buildWabtecUsdEndEvent(
+              row,
+              row.actualMinute,
+              "last delayed departure in the active platform window"
+            ),
+            delayedRows: [],
+            recoveryRow: null
+          };
+        }
+
+        currentWindow.delayedRows.push(row);
+        currentWindow.endMinute = row.actualMinute;
+        currentWindow.endEvent = buildWabtecUsdEndEvent(
+          row,
+          row.actualMinute,
+          "last delayed departure in the active platform window"
+        );
+        return;
+      }
+
+      if (!currentWindow) {
+        return;
+      }
+
+      currentWindow.recoveryRow = row;
+      currentWindow.endMinute = row.actualMinute;
+      currentWindow.endEvent = buildWabtecUsdEndEvent(
+        row,
+        row.actualMinute,
+        "delay recovered below 5 minutes"
+      );
+      pushCompletedWabtecPlatformWindow(windows, currentWindow);
+      currentWindow = null;
+    });
+
+    if (currentWindow) {
+      pushCompletedWabtecPlatformWindow(windows, currentWindow);
+    }
+  });
+
+  return windows.sort(compareWabtecPlatformWindows);
+}
+
+function pushCompletedWabtecPlatformWindow(windows, window) {
+  if (!Number.isFinite(window.endMinute) || window.endMinute <= window.startMinute) {
+    return;
+  }
+
+  windows.push({
+    ...window,
+    delayedRows: [...window.delayedRows]
+  });
+}
+
+function buildWabtecPlatformUsdRows(concurrentWindows, platformDelayWindows) {
+  const platformRows = [];
+
+  concurrentWindows.forEach((concurrentWindow) => {
+    const concurrentStartSecond = minuteToSecond(concurrentWindow.startMinute);
+    const concurrentEndSecond = minuteToSecond(concurrentWindow.endMinute);
+
+    platformDelayWindows.forEach((platformWindow) => {
+      if (!timelineWindowsOverlap(platformWindow, concurrentWindow)) {
+        return;
+      }
+
+      const delayedRowsInConcurrentWindow = platformWindow.delayedRows.filter((row) => {
+        const scheduledSecond = minuteToSecond(row.scheduledMinute);
+        return (
+          scheduledSecond >= concurrentStartSecond &&
+          scheduledSecond <= concurrentEndSecond &&
+          isTimelineUsdDelayed(row)
+        );
+      });
+
+      if (delayedRowsInConcurrentWindow.length === 0) {
+        return;
+      }
+
+      const triggerRow = delayedRowsInConcurrentWindow[0];
+      const recoveryRow = platformWindow.recoveryRow;
+      const recoveryScheduledBeforeConcurrentEnd =
+        recoveryRow &&
+        minuteToSecond(recoveryRow.scheduledMinute) <= concurrentEndSecond;
+      const endMinute = recoveryScheduledBeforeConcurrentEnd
+        ? platformWindow.endMinute
+        : Math.min(platformWindow.endMinute, concurrentWindow.endMinute);
+      const endEvent = recoveryScheduledBeforeConcurrentEnd
+        ? platformWindow.endEvent
+        : buildWabtecConcurrentEndEvent(concurrentWindow, platformWindow, endMinute);
+
+      if (minuteToSecond(endMinute) <= minuteToSecond(triggerRow.scheduledMinute)) {
+        return;
+      }
+
+      platformRows.push({
+        incidentId: concurrentWindow.id,
+        numericId: concurrentWindow.numericId,
+        platformId: platformWindow.platformId,
+        stopCode: platformWindow.stopCode,
+        stopIndex: platformWindow.stopIndex,
+        directionCode: platformWindow.directionCode,
+        tripId: triggerRow.tripId,
+        blockId: triggerRow.blockId,
+        lrvId: triggerRow.lrvId,
+        startMinute: triggerRow.scheduledMinute,
+        endMinute,
+        triggerEvent: buildWabtecUsdTriggerEvent(triggerRow),
+        incidentTriggerEvent: buildWabtecConcurrentTriggerEvent(concurrentWindow, platformWindow),
+        endEvent
+      });
+    });
+  });
+
+  return platformRows.sort(compareWabtecPlatformRows);
+}
+
+function buildWabtecConcurrentTriggerEvent(concurrentWindow, platformWindow) {
+  return {
+    tripId: "",
+    blockId: concurrentWindow.blockIds.join(", "),
+    lrvId: concurrentWindow.lrvIds.join(", "),
+    platformId: platformWindow.platformId,
+    stopCode: platformWindow.stopCode,
+    directionCode: platformWindow.directionCode,
+    scheduledMinute: concurrentWindow.startMinute,
+    actualMinute: concurrentWindow.startMinute,
+    startMinute: concurrentWindow.startMinute,
+    thresholdMinute: concurrentWindow.startMinute,
+    differenceSeconds: null,
+    eventType: "Concurrent disruption"
+  };
+}
+
+function buildWabtecConcurrentEndEvent(concurrentWindow, platformWindow, endMinute) {
+  return {
+    tripId: "",
+    blockId: concurrentWindow.blockIds.join(", "),
+    lrvId: concurrentWindow.lrvIds.join(", "),
+    platformId: platformWindow.platformId,
+    stopCode: platformWindow.stopCode,
+    directionCode: platformWindow.directionCode,
+    scheduledMinute: concurrentWindow.endMinute,
+    actualMinute: concurrentWindow.endMinute,
+    resolvedMinute: endMinute,
+    differenceSeconds: null,
+    eventType: "Concurrent disruption",
+    reason: "concurrent block disruption ended before this platform recovered"
+  };
+}
+
+function buildWabtecUsdTriggerEvent(row) {
+  return {
+    tripId: row.tripId,
+    blockId: row.blockId,
+    lrvId: row.lrvId,
+    platformId: row.platformId,
+    stopCode: row.stopCode,
+    directionCode: row.directionCode,
+    scheduledMinute: row.scheduledMinute,
+    actualMinute: row.actualMinute,
+    startMinute: row.scheduledMinute,
+    thresholdMinute: row.scheduledMinute,
+    differenceSeconds: row.differenceSeconds,
+    eventType: row.arrDep || "DEP"
+  };
+}
+
+function buildWabtecUsdEndEvent(row, resolvedMinute, reason) {
+  return {
+    tripId: row.tripId,
+    blockId: row.blockId,
+    lrvId: row.lrvId,
+    platformId: row.platformId,
+    stopCode: row.stopCode,
+    directionCode: row.directionCode,
+    scheduledMinute: row.scheduledMinute,
+    actualMinute: row.actualMinute,
+    resolvedMinute,
+    differenceSeconds: row.differenceSeconds,
+    eventType: row.arrDep || "DEP",
+    reason
+  };
+}
+
+function addTimelineRowIdentity(window, row) {
+  if (row.tripId) {
+    window.tripIds.add(row.tripId);
+  }
+
+  if (row.lrvId) {
+    window.lrvIds.add(row.lrvId);
+  }
+}
+
+function addTimelineSweepEvent(eventsBySecond, second, event) {
+  const events = eventsBySecond.get(second) || [];
+  events.push(event);
+  eventsBySecond.set(second, events);
+}
+
+function groupTimelineRows(rows, keyGetter) {
+  const rowMap = new Map();
+
+  rows.forEach((row) => {
+    const key = keyGetter(row);
+    if (!key) {
+      return;
+    }
+
+    const group = rowMap.get(key) || [];
+    group.push(row);
+    rowMap.set(key, group);
+  });
+
+  return rowMap;
+}
+
+function compareTimelineRowsByTime(left, right) {
+  const scheduledCompare = left.scheduledMinute - right.scheduledMinute;
+  if (scheduledCompare !== 0) {
+    return scheduledCompare;
+  }
+
+  return getArrDepSortOrder(left.arrDep) - getArrDepSortOrder(right.arrDep);
+}
+
+function compareWabtecPlatformWindows(left, right) {
+  const stopCompare = left.stopIndex - right.stopIndex;
+  if (stopCompare !== 0) {
+    return stopCompare;
+  }
+
+  const directionCompare =
+    getDirectionSortOrder(left.directionCode) - getDirectionSortOrder(right.directionCode);
+  if (directionCompare !== 0) {
+    return directionCompare;
+  }
+
+  return left.startMinute - right.startMinute;
+}
+
+function compareWabtecPlatformRows(left, right) {
+  const incidentCompare = left.numericId - right.numericId;
+  if (incidentCompare !== 0) {
+    return incidentCompare;
+  }
+
+  const platformCompare = compareWabtecPlatformWindows(left, right);
+  if (platformCompare !== 0) {
+    return platformCompare;
+  }
+
+  return left.endMinute - right.endMinute;
+}
+
+function getArrDepSortOrder(arrDep) {
+  return arrDep === "ARR" ? 0 : 1;
+}
+
+function getDirectionSortOrder(directionCode) {
+  return directionCode === "SB" ? 0 : 1;
+}
+
+function isTimelineUsdDelayed(row) {
+  return Number.isFinite(row.differenceSeconds) && row.differenceSeconds >= 5 * 60;
+}
+
+function minuteToSecond(minute) {
+  return Math.round(minute * 60);
+}
+
+function timelineWindowsOverlap(left, right) {
+  return (
+    Number.isFinite(left.startMinute) &&
+    Number.isFinite(left.endMinute) &&
+    Number.isFinite(right.startMinute) &&
+    Number.isFinite(right.endMinute) &&
+    minuteToSecond(left.startMinute) <= minuteToSecond(right.endMinute) &&
+    minuteToSecond(right.startMinute) <= minuteToSecond(left.endMinute)
+  );
 }
 
 function buildDelayTable2Rows(markedRows) {
@@ -1965,7 +3236,9 @@ function buildUiUsdIncidents(platformRows) {
     existing.platformIds = [...new Set([...existing.platformIds, row.platformId])];
     existing.windows.push(row);
 
-    if (row.startMinute < existing.triggerEvent.startMinute) {
+    const existingTriggerMinute =
+      existing.triggerEvent.startMinute ?? existing.triggerEvent.thresholdMinute ?? existing.startMinute;
+    if (row.startMinute < existingTriggerMinute) {
       existing.triggerEvent = row.triggerEvent;
     }
 
@@ -1980,7 +3253,7 @@ function buildUiUsdIncidents(platformRows) {
       ...incident,
       systemicTrigger: incident.systemicTrigger || incident.triggerEvent,
       summary: [
-        "Derived from DelayTable2 and UnplannedServiceDisruption2 style platform windows.",
+        "Derived from Wabtec-style concurrent block disruption platform windows.",
         `${incident.platformIds.length} platform${incident.platformIds.length > 1 ? "s" : ""} impacted`,
         `for ${formatDurationMinutes(incident.endMinute - incident.startMinute)}.`
       ].join(" ")
@@ -2332,9 +3605,9 @@ function buildUsdEndEvent(row) {
   };
 }
 
-function buildTimelineKpi3Windows(rows, usdIncidents) {
+function buildTimelineKpi3Windows(rows, usdIncidents, lrvLookup = createEmptyKpi3LrvLookup()) {
   const movementRows = rows
-    .map(normalizeTimelineMovementRow)
+    .map((row) => normalizeTimelineMovementRow(row, lrvLookup))
     .filter(Boolean)
     .filter((row) => row.assetKey)
     .sort((left, right) => {
@@ -2442,7 +3715,7 @@ function findBestMatchingUsdIncident(startMinute, endMinute, usdIncidents) {
   return matches[0]?.incident || null;
 }
 
-function normalizeTimelineMovementRow(row) {
+function normalizeTimelineMovementRow(row, lrvLookup = createEmptyKpi3LrvLookup()) {
   const stopCode = String(row.Stop || "").trim();
   const stopIndex = stops.findIndex((stop) => stop.shortName === stopCode);
   if (stopIndex === -1) {
@@ -2460,17 +3733,26 @@ function normalizeTimelineMovementRow(row) {
     return null;
   }
 
-  const lrvInfo = normalizeKpi3TargetToken(row.LRVNo || row.Lrv || row.LRV || "");
-  const blockId = String(row.Block || "").trim();
-  const assetKey = lrvInfo.key || (blockId ? `BLOCK:${blockId.toUpperCase()}` : "");
-  const assetLabel = lrvInfo.label || (blockId ? `Block ${blockId}` : "");
+  const lrvInfo = normalizeKpi3LrvToken(row.LRVNo || row.Lrv || row.LRV || "");
   const directionCode = String(row.Direction || "").trim().toUpperCase() === "NB" ? "NB" : "SB";
+  const resolvedLrvInfo = lrvInfo.key
+    ? lrvInfo
+    : resolveKpi3LrvInfoFromLookup({
+        lrvLookup,
+        tripId,
+        stopCode,
+        arrDep: String(row["Arr.Dep"] || row.ArrDep || "").trim().toUpperCase()
+      });
+  if (!resolvedLrvInfo.key) {
+    return null;
+  }
+  const blockId = String(row.Block || "").trim();
 
   return {
-    assetKey,
-    assetLabel,
-    assetKind: lrvInfo.key ? "LRV" : "BLOCK",
-    lrvId: lrvInfo.label,
+    assetKey: resolvedLrvInfo.key,
+    assetLabel: resolvedLrvInfo.label,
+    assetKind: "LRV",
+    lrvId: resolvedLrvInfo.label,
     blockId,
     tripId,
     stopCode,
@@ -2703,6 +3985,144 @@ function normalizeKpi3TargetToken(token) {
     key: `BLOCK:${raw.toUpperCase()}`,
     label: `Block ${raw.toUpperCase()}`
   };
+}
+
+function normalizeKpi3LrvToken(token) {
+  const lrvInfo = normalizeKpi3TargetToken(token);
+  return lrvInfo.key.startsWith("LRV:") ? lrvInfo : { key: "", label: "" };
+}
+
+function createEmptyKpi3LrvLookup() {
+  return {
+    byTripEvent: new Map(),
+    byTrip: new Map()
+  };
+}
+
+function buildKpi3LrvLookupFromTimetableText(text) {
+  const rows = parseCsvRows(text);
+  if (rows.length < 2) {
+    throw new Error("No usable timetable rows found.");
+  }
+
+  const flatLookup = buildFlatKpi3LrvLookup(rows);
+  if (flatLookup.byTrip.size > 0) {
+    return flatLookup;
+  }
+
+  const wideLookup = buildWideKpi3LrvLookup(rows);
+  if (wideLookup.byTrip.size === 0 && wideLookup.byTripEvent.size === 0) {
+    throw new Error("No Trip/Lrv mapping found in the timetable CSV.");
+  }
+
+  return wideLookup;
+}
+
+function buildFlatKpi3LrvLookup(rows) {
+  const lookup = createEmptyKpi3LrvLookup();
+  const header = rows[0].map((value) => String(value || "").trim().toUpperCase());
+  const tripIndex = header.indexOf("TRIP");
+  const lrvIndex = header.findIndex(
+    (value) => value === "LRV" || value === "LRVNO" || value === "LRV NO"
+  );
+
+  if (tripIndex === -1 || lrvIndex === -1) {
+    return lookup;
+  }
+
+  rows.slice(1).forEach((row) => {
+    addKpi3TripLrvMapping(lookup, row[tripIndex], row[lrvIndex]);
+  });
+
+  return lookup;
+}
+
+function buildWideKpi3LrvLookup(rows) {
+  const lookup = createEmptyKpi3LrvLookup();
+  const [stopHeader, eventHeader, ...dataRows] = rows;
+  const tripIndex = findKpi3TimetableColumnIndex(eventHeader, "TRIP");
+  const lrvColumns = eventHeader
+    .map((value, index) => ({
+      value: String(value || "").trim().toUpperCase(),
+      index
+    }))
+    .filter((column) => column.value === "LRV");
+
+  if (tripIndex === -1 || lrvColumns.length === 0) {
+    return lookup;
+  }
+
+  dataRows.forEach((row) => {
+    const tripId = String(row[tripIndex] || "").trim();
+    if (!tripId) {
+      return;
+    }
+
+    const tripCandidates = [];
+    lrvColumns.forEach((column) => {
+      const lrvInfo = normalizeKpi3LrvToken(row[column.index]);
+      if (!lrvInfo.key) {
+        return;
+      }
+
+      tripCandidates.push(lrvInfo);
+      const stopCode = String(stopHeader[column.index] || "").trim().toUpperCase();
+      const arrDep = String(eventHeader[column.index + 1] || "").trim().toUpperCase();
+      if (isKnownStopCode(stopCode) && (arrDep === "ARR" || arrDep === "DEP")) {
+        lookup.byTripEvent.set(
+          getKpi3TripEventLookupKey(tripId, stopCode, arrDep),
+          lrvInfo
+        );
+      }
+    });
+
+    const fallbackLrvInfo = tripCandidates[0];
+    if (fallbackLrvInfo && !lookup.byTrip.has(tripId)) {
+      lookup.byTrip.set(tripId, fallbackLrvInfo);
+    }
+  });
+
+  return lookup;
+}
+
+function findKpi3TimetableColumnIndex(header, columnName) {
+  return header.findIndex(
+    (value) => String(value || "").trim().toUpperCase() === columnName
+  );
+}
+
+function addKpi3TripLrvMapping(lookup, rawTripId, rawLrv) {
+  const tripId = String(rawTripId || "").trim();
+  const lrvInfo = normalizeKpi3LrvToken(rawLrv);
+  if (!tripId || !lrvInfo.key) {
+    return;
+  }
+
+  lookup.byTrip.set(tripId, lrvInfo);
+}
+
+function resolveKpi3LrvInfoFromLookup({ lrvLookup, tripId, stopCode, arrDep }) {
+  if (!lrvLookup) {
+    return { key: "", label: "" };
+  }
+
+  return (
+    lrvLookup.byTripEvent.get(getKpi3TripEventLookupKey(tripId, stopCode, arrDep)) ||
+    lrvLookup.byTrip.get(String(tripId || "").trim()) ||
+    { key: "", label: "" }
+  );
+}
+
+function getKpi3TripEventLookupKey(tripId, stopCode, arrDep) {
+  return [
+    String(tripId || "").trim(),
+    String(stopCode || "").trim().toUpperCase(),
+    String(arrDep || "").trim().toUpperCase()
+  ].join("::");
+}
+
+function isKnownStopCode(stopCode) {
+  return stops.some((stop) => stop.shortName === stopCode);
 }
 
 function getVehicleAssetTarget(vehicle) {
@@ -3184,7 +4604,7 @@ function assessNotificationChannel(window, intervals) {
       firstStartMinute: null,
       lastEndMinute: null,
       initialFailureMinute: window.startMinute + 4,
-      continuousFailureMinute: window.startMinute + 4
+      continuousFailureMinute: window.startMinute + 8
     };
   }
 
@@ -3193,6 +4613,14 @@ function assessNotificationChannel(window, intervals) {
   const lastEnd = Math.max(...overlapping.map((interval) => interval.endMinute));
   let continuousWithin4 = true;
   const continuousFailureCandidates = [];
+
+  // The first missed notification becomes the initial 0.5 PP at +4 minutes.
+  // The continuous 2.0 PP should not accrue until another 4-minute window is
+  // also missed, which makes the earliest continuous failure minute +8.
+  if (firstStart > window.startMinute + 8) {
+    continuousWithin4 = false;
+    continuousFailureCandidates.push(window.startMinute + 8);
+  }
 
   if (lastEnd < window.endMinute - 4) {
     continuousWithin4 = false;
@@ -3268,7 +4696,9 @@ function buildMockUsdIncidents() {
 }
 
 function renderTimelineUsdOverlay(usdIncidents) {
-  const totalSpan = Math.max(1, state.serviceWindow.max - state.serviceWindow.min);
+  const routeWindow = getCurrentRouteServiceWindow();
+  const routeViewMode = getEffectiveRouteViewMode();
+  const totalSpan = Math.max(1, routeWindow.max - routeWindow.min);
   const fragment = document.createDocumentFragment();
 
   usdIncidents.forEach((incident) => {
@@ -3276,7 +4706,7 @@ function renderTimelineUsdOverlay(usdIncidents) {
     const tooltip = document.createElement("div");
     const causeEvent = incident.systemicTrigger || incident.triggerEvent;
     const incidentPoints = roundToTenth(
-      state.kpi2Results
+      getCurrentRouteKpi2Results()
         .filter((result) => result.incidentId === incident.id)
         .reduce((sum, result) => sum + result.totalPoints, 0)
     );
@@ -3285,7 +4715,7 @@ function renderTimelineUsdOverlay(usdIncidents) {
         .filter((result) => result.incidentId === incident.id)
         .reduce((sum, result) => sum + result.totalPoints, 0)
     );
-    const start = ((incident.startMinute - state.serviceWindow.min) / totalSpan) * 100;
+    const start = ((incident.startMinute - routeWindow.min) / totalSpan) * 100;
     const width = ((incident.endMinute - incident.startMinute) / totalSpan) * 100;
     const tripSummary = incident.tripIds.length > 8
       ? `${incident.tripIds.slice(0, 8).join(", ")} +${incident.tripIds.length - 8} more`
@@ -3301,8 +4731,8 @@ function renderTimelineUsdOverlay(usdIncidents) {
       `Trigger event: ${formatUsdCauseSummary(causeEvent)}`,
       `First threshold event: ${formatUsdCauseSummary(incident.triggerEvent)}`,
       `Stop event: ${formatUsdStopSummary(incident.endEvent)}`,
-      state.kpi2FileName ? `KPI 02 points: ${incidentPoints.toFixed(1)}` : "",
-      state.kpi3FileName ? `KPI 03 points: ${incidentKpi3Points.toFixed(1)}` : ""
+      getCurrentRouteKpi2FileLabel() ? `KPI 02 points: ${incidentPoints.toFixed(1)}` : "",
+      routeViewMode !== "kpi2log" && state.kpi3FileName ? `KPI 03 points: ${incidentKpi3Points.toFixed(1)}` : ""
     ].join("\n");
 
     band.className = "timeline-usd-band";
@@ -3323,8 +4753,8 @@ function renderTimelineUsdOverlay(usdIncidents) {
       <p>Trigger event: ${formatUsdCauseSummary(causeEvent)}</p>
       <p>First threshold event: ${formatUsdCauseSummary(incident.triggerEvent)}</p>
       <p>Stop event: ${formatUsdStopSummary(incident.endEvent)}</p>
-      ${state.kpi2FileName ? `<p>KPI 02 points: ${incidentPoints.toFixed(1)}</p>` : ""}
-      ${state.kpi3FileName ? `<p>KPI 03 points: ${incidentKpi3Points.toFixed(1)}</p>` : ""}
+      ${getCurrentRouteKpi2FileLabel() ? `<p>KPI 02 points: ${incidentPoints.toFixed(1)}</p>` : ""}
+      ${routeViewMode !== "kpi2log" && state.kpi3FileName ? `<p>KPI 03 points: ${incidentKpi3Points.toFixed(1)}</p>` : ""}
     `;
     band.appendChild(tooltip);
     fragment.appendChild(band);
@@ -3356,9 +4786,10 @@ function getCurrentMinute() {
 
 function formatMinute(minuteValue, includeSeconds = false) {
   const safeMinute = Math.max(0, Math.min(minuteValue, 24 * 60));
-  const hours = Math.floor(safeMinute / 60) % 24;
-  const minutes = Math.floor(safeMinute % 60);
-  const seconds = Math.floor((safeMinute - Math.floor(safeMinute)) * 60);
+  const totalSeconds = Math.round(safeMinute * 60);
+  const hours = Math.floor(totalSeconds / 3600) % 24;
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
 
   if (includeSeconds) {
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
