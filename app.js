@@ -2507,7 +2507,8 @@ function buildTimelineUsdModel(rows) {
 
   const blockWindows = buildWabtecBlockDisruptionWindows(movementRows);
   const concurrentWindows = buildWabtecConcurrentDisruptionWindows(blockWindows);
-  const delayTable2 = buildWabtecPlatformDelayWindows(departureRows);
+  const terminalHeadways = buildWabtecTerminalHeadways(movementRows);
+  const delayTable2 = buildWabtecPlatformDelayWindows(departureRows, terminalHeadways);
   const rawPlatformRows = buildWabtecPlatformUsdRows(concurrentWindows, delayTable2);
 
   return {
@@ -2526,35 +2527,53 @@ function buildWabtecBlockDisruptionWindows(movementRows) {
   rowsByBlock.forEach((blockRows) => {
     const sortedRows = [...blockRows].sort(compareTimelineRowsByTime);
     let currentWindow = null;
-    let lastDelayedDeparture = null;
+    let lastDisruptedDeparture = null;
 
     sortedRows.forEach((row) => {
       if (row.arrDep !== "DEP") {
         return;
       }
 
-      if (isTimelineUsdDelayed(row)) {
+      if (isTimelineBlockUsdDelayed(row)) {
         if (!currentWindow) {
-          currentWindow = {
-            blockId: row.blockId,
-            startMinute: row.scheduledMinute,
-            endMinute: row.scheduledMinute,
-            triggerEvent: buildWabtecUsdTriggerEvent(row),
-            endEvent: null,
-            tripIds: new Set(),
-            lrvIds: new Set(),
-            delayedRows: []
-          };
+          currentWindow = startWabtecBlockWindow(row);
         }
 
         addTimelineRowIdentity(currentWindow, row);
         currentWindow.delayedRows.push(row);
         currentWindow.endMinute = row.actualMinute;
-        lastDelayedDeparture = row;
+        if (
+          Number.isFinite(row.actualMinute) &&
+          (!Number.isFinite(currentWindow.latestDelayedActualMinute) ||
+            row.actualMinute > currentWindow.latestDelayedActualMinute)
+        ) {
+          currentWindow.latestDelayedActualMinute = row.actualMinute;
+        }
+        lastDisruptedDeparture = row;
+        return;
+      }
+
+      if (isTimelineBlockPlaceholderDisruption(row)) {
+        if (!currentWindow) {
+          currentWindow = startWabtecBlockWindow(row);
+        }
+
+        addTimelineRowIdentity(currentWindow, row);
+        currentWindow.endMinute = row.actualMinute;
+        currentWindow.endEvent = buildWabtecUsdEndEvent(
+          row,
+          row.actualMinute,
+          "missing partial service movement in the active block window"
+        );
+        lastDisruptedDeparture = row;
         return;
       }
 
       if (!currentWindow) {
+        return;
+      }
+
+      if (!canTimelineBlockRowRecover(row, currentWindow)) {
         return;
       }
 
@@ -2566,17 +2585,17 @@ function buildWabtecBlockDisruptionWindows(movementRows) {
       );
       pushCompletedWabtecBlockWindow(blockWindows, currentWindow);
       currentWindow = null;
-      lastDelayedDeparture = null;
+      lastDisruptedDeparture = null;
     });
 
-    if (currentWindow && lastDelayedDeparture) {
-      const fallbackEndRow = findWabtecBlockFallbackEndRow(sortedRows, lastDelayedDeparture);
+    if (currentWindow && lastDisruptedDeparture) {
+      const fallbackEndRow = findWabtecBlockFallbackEndRow(sortedRows, lastDisruptedDeparture);
       const resolvedMinute = fallbackEndRow
         ? fallbackEndRow.scheduledMinute
-        : lastDelayedDeparture.actualMinute;
+        : lastDisruptedDeparture.actualMinute;
       currentWindow.endMinute = resolvedMinute;
       currentWindow.endEvent = buildWabtecUsdEndEvent(
-        fallbackEndRow || lastDelayedDeparture,
+        fallbackEndRow || lastDisruptedDeparture,
         resolvedMinute,
         fallbackEndRow
           ? "scheduled end of the available block movement"
@@ -2587,6 +2606,46 @@ function buildWabtecBlockDisruptionWindows(movementRows) {
   });
 
   return blockWindows.sort((left, right) => left.startMinute - right.startMinute);
+}
+
+function startWabtecBlockWindow(row) {
+  return {
+    blockId: row.blockId,
+    startMinute: row.scheduledMinute,
+    endMinute: row.scheduledMinute,
+    triggerEvent: buildWabtecUsdTriggerEvent(row),
+    endEvent: null,
+    tripIds: new Set(),
+    lrvIds: new Set(),
+    delayedRows: [],
+    latestDelayedActualMinute: row.actualMinute
+  };
+}
+
+function isTimelineBlockUsdDelayed(row) {
+  return Number.isFinite(row.differenceSeconds) && row.differenceSeconds > 5 * 60;
+}
+
+function isTimelineBlockPlaceholderDisruption(row) {
+  const completedService = getTimelineCompletedService(row);
+  return (
+    completedService === "missed" ||
+    (completedService === "partial" && row.actualMissing)
+  );
+}
+
+function canTimelineBlockRowRecover(row, window) {
+  const completedService = String(row.completedService || "").trim().toLowerCase();
+  if (completedService === "missed") {
+    return false;
+  }
+
+  return (
+    completedService !== "partial" ||
+    !Number.isFinite(row.actualMinute) ||
+    !Number.isFinite(window.latestDelayedActualMinute) ||
+    row.actualMinute >= window.latestDelayedActualMinute
+  );
 }
 
 function pushCompletedWabtecBlockWindow(blockWindows, window) {
@@ -2610,6 +2669,57 @@ function findWabtecBlockFallbackEndRow(sortedRows, lastDelayedDeparture) {
       .reverse()
       .find((row) => minuteToSecond(row.scheduledMinute) >= lastDelayedSecond) || null
   );
+}
+
+function buildWabtecTerminalHeadways(movementRows) {
+  const rowsByDirection = new Map();
+  const headways = new Map();
+
+  movementRows.forEach((row) => {
+    if (
+      row.arrDep !== "ARR" ||
+      row.stopIndex !== getTerminalStopIndex(row.directionCode) ||
+      !Number.isFinite(row.actualMinute)
+    ) {
+      return;
+    }
+
+    const directionRows = rowsByDirection.get(row.directionCode) || [];
+    directionRows.push(row);
+    rowsByDirection.set(row.directionCode, directionRows);
+  });
+
+  rowsByDirection.forEach((directionRows) => {
+    [...directionRows]
+      .sort((left, right) => left.actualMinute - right.actualMinute)
+      .forEach((row, index, sortedRows) => {
+        const previous = sortedRows[index - 1];
+        const actualHeadway = previous ? row.actualMinute - previous.actualMinute : Number.NaN;
+        headways.set(getTimelineTripDirectionKey(row), actualHeadway);
+      });
+  });
+
+  return headways;
+}
+
+function getTerminalStopIndex(directionCode) {
+  return directionCode === "NB" ? 0 : stops.length - 1;
+}
+
+function getOriginStopIndex(directionCode) {
+  return directionCode === "NB" ? stops.length - 1 : 0;
+}
+
+function isTimelineOriginStop(row) {
+  return row.stopIndex === getOriginStopIndex(row.directionCode);
+}
+
+function getTimelineTripDirectionKey(row) {
+  return `${row.tripId}::${row.directionCode}`;
+}
+
+function getTimelineCompletedService(row) {
+  return String(row.completedService || "").trim().toLowerCase();
 }
 
 function buildWabtecConcurrentDisruptionWindows(blockWindows) {
@@ -2713,7 +2823,7 @@ function appendWabtecConcurrentSegment(segments, startSecond, endSecond, activeW
   });
 }
 
-function buildWabtecPlatformDelayWindows(departureRows) {
+function buildWabtecPlatformDelayWindows(departureRows, terminalHeadways = new Map()) {
   const rowsByPlatform = groupTimelineRows(departureRows, (row) => row.platformId);
   const windows = [];
 
@@ -2722,28 +2832,18 @@ function buildWabtecPlatformDelayWindows(departureRows) {
     let currentWindow = null;
 
     sortedRows.forEach((row) => {
-      if (isTimelineUsdDelayed(row)) {
+      if (isTimelinePlatformUsdDelayed(row)) {
         if (!currentWindow) {
-          currentWindow = {
-            platformId: row.platformId,
-            stopCode: row.stopCode,
-            stopIndex: row.stopIndex,
-            directionCode: row.directionCode,
-            startMinute: row.scheduledMinute,
-            endMinute: row.actualMinute,
-            triggerEvent: buildWabtecUsdTriggerEvent(row),
-            endEvent: buildWabtecUsdEndEvent(
-              row,
-              row.actualMinute,
-              "last delayed departure in the active platform window"
-            ),
-            delayedRows: [],
-            recoveryRow: null
-          };
+          currentWindow = startWabtecPlatformWindow(row);
         }
 
         currentWindow.delayedRows.push(row);
+        currentWindow.impactRows.push(row);
         currentWindow.endMinute = row.actualMinute;
+        currentWindow.latestDelayedActualMinute = Math.max(
+          currentWindow.latestDelayedActualMinute,
+          row.actualMinute
+        );
         currentWindow.endEvent = buildWabtecUsdEndEvent(
           row,
           row.actualMinute,
@@ -2752,7 +2852,46 @@ function buildWabtecPlatformDelayWindows(departureRows) {
         return;
       }
 
+      if (isWabtecPlatformPlaceholderDisruption(row)) {
+        if (!currentWindow) {
+          currentWindow = startWabtecPlatformWindow(row);
+        }
+
+        currentWindow.impactRows.push(row);
+        currentWindow.endMinute = row.actualMinute;
+        return;
+      }
+
       if (!currentWindow) {
+        return;
+      }
+
+      const completedService = getTimelineCompletedService(row);
+      if (
+        completedService === "partial" &&
+        Number.isFinite(row.actualMinute) &&
+        Number.isFinite(currentWindow.latestDelayedActualMinute) &&
+        row.actualMinute < currentWindow.latestDelayedActualMinute
+      ) {
+        return;
+      }
+
+      if (
+        completedService !== "missedheadway" &&
+        !isTimelineOriginStop(row) &&
+        isWabtecOutOfSequenceRecovery(row, currentWindow)
+      ) {
+        currentWindow.outOfSequenceRecovery = true;
+        return;
+      }
+
+      // Wabtec does not close a platform window on an overtaking recovery row.
+      if (
+        completedService !== "missedheadway" &&
+        !isTimelineOriginStop(row) &&
+        currentWindow.outOfSequenceRecovery &&
+        !hasWabtecTerminalHeadwayRecovered(row, terminalHeadways)
+      ) {
         return;
       }
 
@@ -2775,6 +2914,53 @@ function buildWabtecPlatformDelayWindows(departureRows) {
   return windows.sort(compareWabtecPlatformWindows);
 }
 
+function startWabtecPlatformWindow(row) {
+  return {
+    platformId: row.platformId,
+    stopCode: row.stopCode,
+    stopIndex: row.stopIndex,
+    directionCode: row.directionCode,
+    startMinute: row.scheduledMinute,
+    endMinute: row.actualMinute,
+    triggerEvent: buildWabtecUsdTriggerEvent(row),
+    endEvent: buildWabtecUsdEndEvent(
+      row,
+      row.actualMinute,
+      "last delayed departure in the active platform window"
+    ),
+    delayedRows: [],
+    impactRows: [],
+    recoveryRow: null,
+    latestDelayedActualMinute: row.actualMinute,
+    outOfSequenceRecovery: false
+  };
+}
+
+function isTimelinePlatformUsdDelayed(row) {
+  return Number.isFinite(row.differenceSeconds) && row.differenceSeconds > 5 * 60;
+}
+
+function isWabtecPlatformPlaceholderDisruption(row) {
+  const completedService = getTimelineCompletedService(row);
+  return (
+    completedService === "missed" ||
+    (completedService === "partial" && row.actualMissing)
+  );
+}
+
+function isWabtecOutOfSequenceRecovery(row, window) {
+  return (
+    Number.isFinite(row.actualMinute) &&
+    Number.isFinite(window.latestDelayedActualMinute) &&
+    minuteToSecond(row.actualMinute) < minuteToSecond(window.latestDelayedActualMinute)
+  );
+}
+
+function hasWabtecTerminalHeadwayRecovered(row, terminalHeadways) {
+  const actualHeadway = terminalHeadways.get(getTimelineTripDirectionKey(row));
+  return !Number.isFinite(actualHeadway) || actualHeadway >= 5;
+}
+
 function pushCompletedWabtecPlatformWindow(windows, window) {
   if (!Number.isFinite(window.endMinute) || window.endMinute <= window.startMinute) {
     return;
@@ -2782,7 +2968,8 @@ function pushCompletedWabtecPlatformWindow(windows, window) {
 
   windows.push({
     ...window,
-    delayedRows: [...window.delayedRows]
+    delayedRows: [...window.delayedRows],
+    impactRows: [...window.impactRows]
   });
 }
 
@@ -2790,7 +2977,6 @@ function buildWabtecPlatformUsdRows(concurrentWindows, platformDelayWindows) {
   const platformRows = [];
 
   concurrentWindows.forEach((concurrentWindow) => {
-    const concurrentStartSecond = minuteToSecond(concurrentWindow.startMinute);
     const concurrentEndSecond = minuteToSecond(concurrentWindow.endMinute);
 
     platformDelayWindows.forEach((platformWindow) => {
@@ -2798,20 +2984,10 @@ function buildWabtecPlatformUsdRows(concurrentWindows, platformDelayWindows) {
         return;
       }
 
-      const delayedRowsInConcurrentWindow = platformWindow.delayedRows.filter((row) => {
-        const scheduledSecond = minuteToSecond(row.scheduledMinute);
-        return (
-          scheduledSecond >= concurrentStartSecond &&
-          scheduledSecond <= concurrentEndSecond &&
-          isTimelineUsdDelayed(row)
-        );
-      });
-
-      if (delayedRowsInConcurrentWindow.length === 0) {
-        return;
-      }
-
-      const triggerRow = delayedRowsInConcurrentWindow[0];
+      const overlapStartMinute = Math.max(
+        platformWindow.startMinute,
+        concurrentWindow.startMinute
+      );
       const recoveryRow = platformWindow.recoveryRow;
       const recoveryScheduledBeforeConcurrentEnd =
         recoveryRow &&
@@ -2819,6 +2995,19 @@ function buildWabtecPlatformUsdRows(concurrentWindows, platformDelayWindows) {
       const endMinute = recoveryScheduledBeforeConcurrentEnd
         ? platformWindow.endMinute
         : Math.min(platformWindow.endMinute, concurrentWindow.endMinute);
+      const impactRowsInWindow = (platformWindow.impactRows || platformWindow.delayedRows).filter((row) => {
+        const scheduledSecond = minuteToSecond(row.scheduledMinute);
+        return (
+          scheduledSecond >= minuteToSecond(overlapStartMinute) &&
+          scheduledSecond <= minuteToSecond(endMinute)
+        );
+      });
+
+      if (impactRowsInWindow.length === 0) {
+        return;
+      }
+
+      const triggerRow = impactRowsInWindow[0];
       const endEvent = recoveryScheduledBeforeConcurrentEnd
         ? platformWindow.endEvent
         : buildWabtecConcurrentEndEvent(concurrentWindow, platformWindow, endMinute);
@@ -3315,7 +3504,9 @@ function normalizeTimelineDepartureRow(row) {
     return null;
   }
 
-  const actualMinute = parseTimestampToMinute(row.Actual || row.Scheduled) ?? scheduledMinute;
+  const parsedActualMinute = parseTimestampToMinute(row.Actual);
+  const actualMissing = parsedActualMinute === null;
+  const actualMinute = parsedActualMinute ?? scheduledMinute;
   const tripId = String(row.Trip || "").trim();
   const directionCode = String(row.Direction || "").trim().toUpperCase() === "NB" ? "NB" : "SB";
   const differenceSeconds = parseDifferenceSeconds(row.Difference, actualMinute, scheduledMinute);
@@ -3329,8 +3520,10 @@ function normalizeTimelineDepartureRow(row) {
     arrDep: String(row["Arr.Dep"] || row.ArrDep || "").trim().toUpperCase(),
     scheduledMinute,
     actualMinute,
+    actualMissing,
     differenceSeconds,
     directionCode,
+    completedService: String(row.CompletedService || "").trim(),
     platformId: `${String(row.Stop || "").trim()}${directionCode}`
   };
 }
@@ -3846,16 +4039,20 @@ function buildKpi3EndEvent(current, impact, endMinute) {
 }
 
 function buildKpi2Events(rows) {
+  const serviceDateKey = getNotificationServiceDateKey(rows);
   return rows
-    .flatMap((row) => expandKpi2Row(row))
+    .flatMap((row) => expandKpi2Row(row, serviceDateKey))
     .filter(Boolean)
     .sort((left, right) => left.eventMinute - right.eventMinute);
 }
 
-function expandKpi2Row(row) {
+function expandKpi2Row(row, serviceDateKey) {
   const type = String(row.type || "").trim();
   const messageId = String(row.messageId || "").trim();
-  const eventMinute = parseTimestampToMinute(String(row.eventTime || "").trim());
+  const eventMinute = parseTimestampToMinute(
+    String(row.eventTime || "").trim(),
+    serviceDateKey
+  );
 
   if (!type || type === "----" || !messageId || messageId === "---------") {
     return [];
@@ -3893,6 +4090,18 @@ function expandKpi2Row(row) {
     .filter(Boolean);
 }
 
+function getNotificationServiceDateKey(rows) {
+  const dateKeys = rows
+    .map((row) => {
+      const match = String(row.eventTime || "").match(/^(\d{4})-(\d{2})-(\d{2}) /);
+      return match ? `${match[1]}-${match[2]}-${match[3]}` : "";
+    })
+    .filter(Boolean)
+    .sort();
+
+  return dateKeys[0] || "";
+}
+
 function normaliseKpi2Platform(token) {
   if (!token) {
     return "";
@@ -3910,16 +4119,20 @@ function normaliseKpi2Platform(token) {
 }
 
 function buildKpi3Events(rows) {
+  const serviceDateKey = getNotificationServiceDateKey(rows);
   return rows
-    .flatMap((row) => expandKpi3Row(row))
+    .flatMap((row) => expandKpi3Row(row, serviceDateKey))
     .filter(Boolean)
     .sort((left, right) => left.eventMinute - right.eventMinute);
 }
 
-function expandKpi3Row(row) {
+function expandKpi3Row(row, serviceDateKey) {
   const type = String(row.type || "").trim().toUpperCase();
   const messageId = String(row.messageId || "").trim();
-  const eventMinute = parseTimestampToMinute(String(row.eventTime || "").trim());
+  const eventMinute = parseTimestampToMinute(
+    String(row.eventTime || "").trim(),
+    serviceDateKey
+  );
 
   if (!type || type === "----" || !messageId || messageId === "---------") {
     return [];
@@ -4232,28 +4445,19 @@ function buildNotificationIntervals(events) {
   platformMap.forEach((platformEvents, platformId) => {
     const sorted = [...platformEvents].sort((left, right) => left.eventMinute - right.eventMinute);
     const intervals = [];
-    const readFlags = new Array(sorted.length).fill(false);
+    const persistent = sorted.some((event) => event.channel === "PID");
 
     for (let index = 0; index < sorted.length; index += 1) {
       const event = sorted[index];
-      if ((event.status !== "START" && event.status !== "CONT") || readFlags[index]) {
+      if (event.status !== "START" && event.status !== "CONT") {
         continue;
       }
 
       let endMinute = event.eventMinute + 4;
-      let endFound = false;
       for (let lookAhead = index + 1; lookAhead < sorted.length; lookAhead += 1) {
         const candidate = sorted[lookAhead];
-        const unread = !readFlags[lookAhead];
-
-        if (!endFound && candidate.status === "END" && unread) {
+        if (candidate.status === "END") {
           endMinute = candidate.eventMinute;
-          endFound = true;
-        }
-
-        readFlags[lookAhead] = true;
-
-        if (endFound) {
           break;
         }
       }
@@ -4261,6 +4465,7 @@ function buildNotificationIntervals(events) {
       intervals.push({
         startMinute: event.eventMinute,
         endMinute,
+        persistent,
         messageId: event.messageId
       });
     }
@@ -4285,28 +4490,19 @@ function buildAssetNotificationIntervals(events) {
   assetMap.forEach((assetEvents, assetKey) => {
     const sorted = [...assetEvents].sort((left, right) => left.eventMinute - right.eventMinute);
     const intervals = [];
-    const readFlags = new Array(sorted.length).fill(false);
+    const persistent = sorted.some((event) => event.channel === "PID");
 
     for (let index = 0; index < sorted.length; index += 1) {
       const event = sorted[index];
-      if ((event.status !== "START" && event.status !== "CONT") || readFlags[index]) {
+      if (event.status !== "START" && event.status !== "CONT") {
         continue;
       }
 
       let endMinute = event.eventMinute + 4;
-      let endFound = false;
       for (let lookAhead = index + 1; lookAhead < sorted.length; lookAhead += 1) {
         const candidate = sorted[lookAhead];
-        const unread = !readFlags[lookAhead];
-
-        if (!endFound && candidate.status === "END" && unread) {
+        if (candidate.status === "END") {
           endMinute = candidate.eventMinute;
-          endFound = true;
-        }
-
-        readFlags[lookAhead] = true;
-
-        if (endFound) {
           break;
         }
       }
@@ -4314,6 +4510,7 @@ function buildAssetNotificationIntervals(events) {
       intervals.push({
         startMinute: event.eventMinute,
         endMinute,
+        persistent,
         messageId: event.messageId
       });
     }
@@ -4609,31 +4806,66 @@ function assessNotificationChannel(window, intervals) {
   }
 
   const firstStart = overlapping[0].startMinute;
-  const initialWithin4 = firstStart <= window.startMinute + 4;
   const lastEnd = Math.max(...overlapping.map((interval) => interval.endMinute));
+  const initialDeadline = window.startMinute + 4;
+  const initialCandidates = intervals.filter(
+    (interval) =>
+      interval.startMinute <= initialDeadline &&
+      interval.endMinute >= window.startMinute
+  );
+  const initialWithin4 = initialCandidates.length > 0;
   let continuousWithin4 = true;
   const continuousFailureCandidates = [];
+  let lastMessageMinute = initialWithin4
+    ? Math.max(...initialCandidates.map((interval) => interval.startMinute))
+    : null;
+  let deadline = window.startMinute + 8;
 
-  // The first missed notification becomes the initial 0.5 PP at +4 minutes.
-  // The continuous 2.0 PP should not accrue until another 4-minute window is
-  // also missed, which makes the earliest continuous failure minute +8.
-  if (firstStart > window.startMinute + 8) {
+  if (!initialWithin4) {
+    const seedCandidates = intervals.filter(
+      (interval) =>
+        interval.startMinute <= window.startMinute + 8 &&
+        interval.endMinute >= window.startMinute
+    );
+    if (seedCandidates.length > 0) {
+      lastMessageMinute = Math.max(...seedCandidates.map((interval) => interval.startMinute));
+      deadline = lastMessageMinute + 4;
+    }
+  }
+
+  if (!Number.isFinite(lastMessageMinute)) {
     continuousWithin4 = false;
     continuousFailureCandidates.push(window.startMinute + 8);
   }
 
-  if (lastEnd < window.endMinute - 4) {
-    continuousWithin4 = false;
-    continuousFailureCandidates.push(lastEnd + 4);
-  }
+  while (continuousWithin4 && deadline <= window.endMinute) {
+    const persistentActive = intervals.some(
+      (interval) =>
+        interval.persistent &&
+        interval.startMinute <= lastMessageMinute &&
+        interval.endMinute >= deadline
+    );
 
-  for (let index = 1; index < overlapping.length; index += 1) {
-    const previous = overlapping[index - 1];
-    const current = overlapping[index];
-    if (current.startMinute > previous.endMinute + 4) {
-      continuousWithin4 = false;
-      continuousFailureCandidates.push(previous.endMinute + 4);
+    if (persistentActive) {
+      deadline += 4;
+      continue;
     }
+
+    const nextCandidates = intervals.filter(
+      (interval) =>
+        interval.startMinute > lastMessageMinute &&
+        interval.startMinute <= deadline &&
+        interval.endMinute >= window.startMinute
+    );
+
+    if (nextCandidates.length === 0) {
+      continuousWithin4 = false;
+      continuousFailureCandidates.push(deadline);
+      break;
+    }
+
+    lastMessageMinute = Math.max(...nextCandidates.map((interval) => interval.startMinute));
+    deadline = lastMessageMinute + 4;
   }
 
   return {
@@ -4763,7 +4995,7 @@ function renderTimelineUsdOverlay(usdIncidents) {
   elements.timelineUsdOverlay.replaceChildren(fragment);
 }
 
-function parseTimestampToMinute(value) {
+function parseTimestampToMinute(value, serviceDateKey = "") {
   if (!value) {
     return null;
   }
@@ -4775,8 +5007,25 @@ function parseTimestampToMinute(value) {
     return null;
   }
 
-  const [, , , , hour, minute, second, fractional = "0"] = match;
-  return Number(hour) * 60 + Number(minute) + (Number(second) + Number(`0.${fractional}`)) / 60;
+  const [, year, month, day, hour, minute, second, fractional = "0"] = match;
+  const dayOffset = serviceDateKey
+    ? Math.round(
+        (Date.UTC(Number(year), Number(month) - 1, Number(day)) -
+          Date.UTC(
+            Number(serviceDateKey.slice(0, 4)),
+            Number(serviceDateKey.slice(5, 7)) - 1,
+            Number(serviceDateKey.slice(8, 10))
+          )) /
+          86400000
+      )
+    : 0;
+
+  return (
+    dayOffset * 24 * 60 +
+    Number(hour) * 60 +
+    Number(minute) +
+    (Number(second) + Number(`0.${fractional}`)) / 60
+  );
 }
 
 function getCurrentMinute() {
@@ -4785,7 +5034,7 @@ function getCurrentMinute() {
 }
 
 function formatMinute(minuteValue, includeSeconds = false) {
-  const safeMinute = Math.max(0, Math.min(minuteValue, 24 * 60));
+  const safeMinute = Math.max(0, minuteValue);
   const totalSeconds = Math.round(safeMinute * 60);
   const hours = Math.floor(totalSeconds / 3600) % 24;
   const minutes = Math.floor((totalSeconds % 3600) / 60);
